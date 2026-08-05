@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>voice-companion &middot; latency v0.1</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328;
+    --dim:#656d76; --accent:#0969da;
+    --stt:#3f8f63; --camera:#b8901f; --llm:#3f6fb5; --tts:#9c4f93; --play:#7d8590;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d1117; --panel:#161b22; --line:#30363d; --ink:#e6edf3;
+      --dim:#8b949e; --accent:#4493f8;
+      --stt:#57ab7a; --camera:#d4a72c; --llm:#539bf5; --tts:#c46fb8; --play:#768390;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding:28px 20px 60px}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:13.5px;margin:0 0 22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px;margin-bottom:18px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+    margin:0 0 14px;font-weight:600}
+  .tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{font:inherit;font-size:13px;padding:6px 13px;border-radius:7px;cursor:pointer;
+    background:transparent;border:1px solid var(--line);color:var(--dim)}
+  .tab[aria-selected=true]{background:var(--accent);border-color:var(--accent);
+    color:#fff;font-weight:500}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12.5px}
+  .lg{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--dim);
+    user-select:none}
+  .lg.off{opacity:.35;text-decoration:line-through}
+  .sw{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .seg{cursor:pointer;transition:opacity .12s}
+  .seg:hover{opacity:.78}
+  .axis{fill:var(--dim);font-size:11px}
+  .glab{fill:var(--ink);font-size:13px;font-weight:600}
+  .gtot{fill:var(--ink);font-size:12.5px;font-weight:600}
+  .grid{stroke:var(--line);stroke-width:1}
+  #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
+    background:var(--ink);color:var(--bg);padding:7px 10px;border-radius:7px;
+    font-size:12.5px;max-width:330px;z-index:9;line-height:1.45}
+  #tip b{font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:11.5px;text-transform:uppercase;
+    letter-spacing:.05em}
+  td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .note{color:var(--dim);font-size:12.5px;margin-top:12px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .kpi{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .kpi .v{font-size:21px;font-weight:600;font-variant-numeric:tabular-nums}
+  .kpi .k{color:var(--dim);font-size:11.5px;text-transform:uppercase;
+    letter-spacing:.05em;margin-top:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Time to first audio &mdash; <span id="tag"></span></h1>
+  <p class="sub" id="sysline"></p>
+
+  <div class="card">
+    <h2>End to end</h2>
+    <div class="tabs" role="tablist" id="modeTabs"></div>
+    <svg id="mainChart" role="img" aria-label="TTFA stage breakdown"></svg>
+    <div class="legend" id="legend"></div>
+    <p class="note" id="modeNote"></p>
+  </div>
+
+  <div class="card">
+    <h2>Every turn of the live conversation</h2>
+    <svg id="turnChart" role="img" aria-label="Per-turn latency"></svg>
+    <p class="note">Hover a bar for what was said and what came back. Taller
+      bars with a gold segment are turns that used the camera.</p>
+  </div>
+
+  <div class="card">
+    <h2>Component detail (benchmark)</h2>
+    <div class="kpis" id="kpis"></div>
+    <table id="detail"></table>
+  </div>
+</div>
+<div id="tip"></div>
+
+<script>
+const DATA = {"tag": "v0.1", "sysline": "NVIDIA Jetson Orin Nano Super (8GB) \u00b7 6 cores \u00b7 faster-whisper tiny (int8, cpu) \u00b7 gemma3:4b-jetson \u00b7 piper en_US-lessac-medium \u00b7 measured 2026-08-05", "modes": {"benchmark": {"label": "Benchmark (isolated)", "rows": [{"label": "voice \u2192 voice", "stages": {"stt": 739.3, "camera": 0, "llm": 1855.3, "tts": 267.6, "play": 0}}, {"label": "voice + image \u2192 voice", "stages": {"stt": 739.3, "camera": 12.7, "llm": 4232.8, "tts": 267.6, "play": 0}}], "note": "Each stage measured on its own, nothing else running. This is the floor the hardware can do."}, "live": {"label": "Live conversation (median)", "rows": [{"label": "voice \u2192 voice  (n=13)", "stages": {"stt": 749.4, "camera": 0.0, "llm": 2328.6, "tts": 902.5, "play": 2.9}}, {"label": "voice + image \u2192 voice  (n=3)", "stages": {"stt": 759.0, "camera": 18.9, "llm": 7079.5, "tts": 1437.6, "play": 5.9}}], "note": "Medians from a real recorded conversation, where STT, TTS, the camera thread and the model all compete for 6 CPU cores. The gap versus the benchmark is contention."}}, "live": [{"turn": 1, "vision": false, "transcript": "Can you hear me?", "reply": "Yes, I can hear you perfectly! How can I help you today?", "stages": {"stt": 739.1, "camera": 0.0, "llm": 3190.6, "tts": 902.5, "play": 5.7}, "total": 4837.9}, {"turn": 2, "vision": true, "transcript": "What do you see right now?", "reply": "I see a man sitting on a couch in what appears to be his living room.", "stages": {"stt": 759.0, "camera": 22.0, "llm": 7079.5, "tts": 1437.6, "play": 5.9}, "total": 9304.0}, {"turn": 3, "vision": false, "transcript": "Count from 1 to 10.", "reply": "One, two, three, four, five, six, seven, eight, nine, ten!", "stages": {"stt": 745.5, "camera": 0.0, "llm": 2309.9, "tts": 1930.3, "play": 9.7}, "total": 4995.4}, {"turn": 4, "vision": false, "transcript": "What is the number that I'm showing with my hands?", "reply": "You are holding up five fingers.", "stages": {"stt": 846.6, "camera": 0.0, "llm": 2201.8, "tts": 760.9, "play": 2.6}, "total": 3811.9}, {"turn": 5, "vision": false, "transcript": "How about now?", "reply": "You\u2019re currently displaying four fingers.", "stages": {"stt": 731.4, "camera": 0.0, "llm": 2154.0, "tts": 853.4, "play": 2.9}, "total": 3741.7}, {"turn": 6, "vision": true, "transcript": "What am I holding right now?", "reply": "You are holding a remote control.", "stages": {"stt": 727.2, "camera": 18.9, "llm": 6997.5, "tts": 672.9, "play": 2.0}, "total": 8418.5}, {"turn": 7, "vision": false, "transcript": "How are you right now?", "reply": "I\u2019m functioning normally and ready to assist you!", "stages": {"stt": 711.1, "camera": 0.0, "llm": 2375.0, "tts": 1097.2, "play": 3.3}, "total": 4186.6}, {"turn": 8, "vision": false, "transcript": "What am I doing right now?", "reply": "You're sitting on a couch, looking at a tablet, and holding a remote control.", "stages": {"stt": 693.1, "camera": 0.0, "llm": 2254.0, "tts": 1721.2, "play": 6.4}, "total": 4674.7}, {"turn": 9, "vision": false, "transcript": "How about now?", "reply": "You are currently smiling slightly while looking at the tablet.", "stages": {"stt": 697.4, "camera": 0.0, "llm": 2355.8, "tts": 1146.0, "play": 4.1}, "total": 4203.3}, {"turn": 10, "vision": false, "transcript": "What is the brand of the Mark here I'm holding right now?", "reply": "It appears to be a Garmin remote.", "stages": {"stt": 819.0, "camera": 0.0, "llm": 2533.4, "tts": 840.8, "play": 2.4}, "total": 4195.6}, {"turn": 11, "vision": false, "transcript": "What is the brand of the marker that I'm holding right now?", "reply": "That\u2019s an Ikea marker.", "stages": {"stt": 838.7, "camera": 0.0, "llm": 2328.6, "tts": 704.0, "play": 1.8}, "total": 3873.1}, {"turn": 12, "vision": false, "transcript": "What is written on this marker?", "reply": "I can see \u201cSVEA\u201d written on the marker.", "stages": {"stt": 749.4, "camera": 0.0, "llm": 2290.2, "tts": 1173.7, "play": 2.7}, "total": 4216.0}, {"turn": 13, "vision": false, "transcript": "What is the color of my shirt?", "reply": "You are wearing a blue shirt!", "stages": {"stt": 777.7, "camera": 0.0, "llm": 2212.4, "tts": 704.9, "play": 1.7}, "total": 3696.7}, {"turn": 14, "vision": false, "transcript": "List all the things you are saying in my living room.", "reply": "I\u2019ve observed a man sitting on a couch, a tablet, an Ikea marker, a Garmin remote, and a television.", "stages": {"stt": 803.7, "camera": 0.0, "llm": 2417.7, "tts": 2391.8, "play": 8.1}, "total": 5621.3}, {"turn": 15, "vision": true, "transcript": "How about now? What do you see now?", "reply": "I see the same living room setup as before\u2014the man on the couch, the tablet, and the Ikea marker are still present.", "stages": {"stt": 840.7, "camera": 14.9, "llm": 7155.3, "tts": 2291.1, "play": 8.9}, "total": 10310.9}, {"turn": 16, "vision": false, "transcript": "The marker is not in the living room right now.", "reply": "You\u2019re absolutely correct! The marker is no longer visible in the image.", "stages": {"stt": 809.3, "camera": 0.0, "llm": 2451.1, "tts": 702.9, "play": 2.3}, "total": 3965.6}], "detail": [{"stage": "STT (whisper tiny)", "min": 698.7, "median": 739.3, "p90": 761.0, "max": 761.3, "n": 8}, {"stage": "LLM first token \u2014 text", "min": 1646.4, "median": 1855.3, "p90": 1953.0, "max": 1962.8, "n": 18}, {"stage": "LLM first token \u2014 vision", "min": 1631.8, "median": 4232.8, "p90": 6647.9, "max": 6651.9, "n": 8}, {"stage": "TTS synthesis (piper)", "min": 233.4, "median": 267.6, "p90": 286.1, "max": 286.1, "n": 3}, {"stage": "camera capture + encode", "min": 11.5, "median": 12.7, "p90": 14.6, "max": 14.6, "n": 3}, {"stage": "camera frame age", "min": 52.4, "median": 253.5, "p90": 451.6, "max": 451.6, "n": 3}], "kpis": [{"key": "voice \u2192 voice", "value": "2.86s"}, {"key": "voice+image \u2192 voice", "value": "5.25s"}, {"key": "LLM throughput", "value": "16.03 tok/s"}, {"key": "STT realtime factor", "value": "0.363\u00d7"}, {"key": "TTS realtime factor", "value": "0.091\u00d7"}, {"key": "vision triggers", "value": "17/17"}]};
+
+const STAGES = [
+  {k:"stt",    label:"STT",             css:"--stt"},
+  {k:"camera", label:"camera capture",  css:"--camera"},
+  {k:"llm",    label:"LLM first token", css:"--llm"},
+  {k:"tts",    label:"TTS first audio", css:"--tts"},
+  {k:"play",   label:"playback start",  css:"--play"},
+];
+const colour = k => getComputedStyle(document.documentElement)
+  .getPropertyValue(STAGES.find(s=>s.k===k).css).trim();
+
+const off = new Set();
+let mode = "benchmark";
+const tip = document.getElementById("tip");
+
+function showTip(html, e){
+  tip.innerHTML = html;
+  tip.style.opacity = 1;
+  const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + w > innerWidth - 8)  x = e.clientX - w - pad;
+  if (y + h > innerHeight - 8) y = e.clientY - h - pad;
+  tip.style.left = x + "px";
+  tip.style.top  = y + "px";
+}
+const hideTip = () => { tip.style.opacity = 0; };
+
+function el(tag, attrs, kids){
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in (attrs||{})) n.setAttribute(k, attrs[k]);
+  (kids||[]).forEach(c => n.appendChild(c));
+  return n;
+}
+const txt = (s) => document.createTextNode(s);
+
+// ---- main stacked chart -------------------------------------------------
+function drawMain(){
+  const svg = document.getElementById("mainChart");
+  if (!svg) return;
+  svg.textContent = "";
+  const rows = DATA.modes[mode].rows;
+  const W = 1000, L = 190, R = 108, barH = 30, rowH = 62, top = 26;
+  const plot = W - L - R;
+  const shown = r => STAGES.filter(s=>!off.has(s.k))
+                           .reduce((a,s)=>a+(r.stages[s.k]||0),0);
+  const peak = Math.max(...rows.map(shown), 1);
+  const axisMax = Math.ceil(peak/1000)*1000 || 1000;
+  const sc = plot/axisMax;
+  const H = top + rows.length*rowH + 44;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  for (let ms=0; ms<=axisMax; ms+=1000){
+    const x = L + ms*sc;
+    svg.appendChild(el("line",{x1:x,y1:top-8,x2:x,y2:H-34,class:"grid",
+      "stroke-opacity":ms?0.35:0.7}));
+    svg.appendChild(el("text",{x:x,y:H-14,class:"axis","text-anchor":"middle"},
+      [txt((ms/1000)+"s")]));
+  }
+
+  rows.forEach((r,i)=>{
+    const y = top + i*rowH;
+    svg.appendChild(el("text",{x:0,y:y+barH*0.7,class:"glab"},[txt(r.label)]));
+    let x = L;
+    STAGES.forEach(s=>{
+      if (off.has(s.k)) return;
+      const v = r.stages[s.k]||0;
+      if (!v) return;
+      const w = v*sc;
+      const rect = el("rect",{x:x,y:y,width:Math.max(w,1),height:barH,
+        fill:colour(s.k),rx:3,class:"seg"});
+      const denom = shown(r) || 1;
+      const share = (v/denom*100).toFixed(0);
+      rect.addEventListener("mousemove", e=>showTip(
+        `<b>${s.label}</b><br>${v.toFixed(0)} ms &middot; ${share}% of this path`, e));
+      rect.addEventListener("mouseleave", hideTip);
+      svg.appendChild(rect);
+      if (w > 52) svg.appendChild(el("text",{x:x+w/2,y:y+barH*0.66,
+        "text-anchor":"middle","font-size":"11.5",fill:"#0d1117",
+        "fill-opacity":"0.85"},[txt(v.toFixed(0))]));
+      x += w;
+    });
+    svg.appendChild(el("text",{x:x+10,y:y+barH*0.7,class:"gtot"},
+      [txt((shown(r)/1000).toFixed(2)+"s")]));
+  });
+  document.getElementById("modeNote").textContent = DATA.modes[mode].note;
+}
+
+// ---- per-turn chart ----------------------------------------------------
+function drawTurns(){
+  const svg = document.getElementById("turnChart");
+  if (!svg) return;
+  svg.textContent = "";
+  const turns = DATA.live;
+  if (!svg) return;
+  if (!turns.length){ svg.style.display = "none"; return; }
+  const W = 1000, L = 40, B = 46, top = 16, H = 300;
+  const plot = W - L - 16, ph = H - top - B;
+  const peak = Math.max(...turns.map(t=>t.total));
+  const axisMax = Math.ceil(peak/2000)*2000 || 2000;
+  const sc = ph/axisMax;
+  const bw = Math.min(52, plot/turns.length - 8);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+
+  for (let ms=0; ms<=axisMax; ms+=2000){
+    const y = top + ph - ms*sc;
+    svg.appendChild(el("line",{x1:L,y1:y,x2:W-16,y2:y,class:"grid",
+      "stroke-opacity":ms?0.35:0.7}));
+    svg.appendChild(el("text",{x:L-8,y:y+4,class:"axis","text-anchor":"end"},
+      [txt((ms/1000)+"s")]));
+  }
+
+  turns.forEach((t,i)=>{
+    const cx = L + 12 + i*(plot/turns.length);
+    let yTop = top + ph;
+    STAGES.forEach(s=>{
+      if (off.has(s.k)) return;
+      const v = t.stages[s.k]||0;
+      if (!v) return;
+      const h = v*sc;
+      yTop -= h;
+      const rect = el("rect",{x:cx,y:yTop,width:bw,height:Math.max(h,1),
+        fill:colour(s.k),class:"seg",rx:2});
+      rect.addEventListener("mousemove", e=>showTip(
+        `<b>turn ${t.turn}</b>${t.vision?' &middot; used camera':''}<br>` +
+        `<b>${s.label}: ${v.toFixed(0)} ms</b> of ${(t.total/1000).toFixed(2)}s<br>` +
+        `<span style="opacity:.75">you:</span> ${esc(t.transcript)}<br>` +
+        `<span style="opacity:.75">bot:</span> ${esc(t.reply)}`, e));
+      rect.addEventListener("mouseleave", hideTip);
+      svg.appendChild(rect);
+    });
+    svg.appendChild(el("text",{x:cx+bw/2,y:H-B+18,class:"axis",
+      "text-anchor":"middle"},[txt(t.turn)]));
+    if (t.vision) svg.appendChild(el("text",{x:cx+bw/2,y:H-B+32,class:"axis",
+      "text-anchor":"middle","font-size":"10"},[txt("cam")]));
+  });
+}
+const esc = s => (s||"").replace(/[<>&]/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+
+// ---- legend, tabs, tables ---------------------------------------------
+function drawLegend(){
+  const box = document.getElementById("legend");
+  box.textContent = "";
+  STAGES.forEach(s=>{
+    const on = !off.has(s.k);
+    const d = document.createElement("div");
+    d.className = "lg" + (on ? "" : " off");
+    d.innerHTML = `<span class="sw" style="background:${colour(s.k)}"></span>${s.label}`;
+    d.title = "click to hide this stage";
+    d.onclick = ()=>{ on ? off.add(s.k) : off.delete(s.k); render(); };
+    box.appendChild(d);
+  });
+}
+
+function drawTabs(){
+  const box = document.getElementById("modeTabs");
+  box.textContent = "";
+  Object.keys(DATA.modes).forEach(k=>{
+    const b = document.createElement("button");
+    b.className = "tab"; b.textContent = DATA.modes[k].label;
+    b.setAttribute("role","tab");
+    b.setAttribute("aria-selected", k===mode ? "true" : "false");
+    b.onclick = ()=>{ mode = k; render(); };
+    box.appendChild(b);
+  });
+}
+
+function drawDetail(){
+  const k = document.getElementById("kpis");
+  k.innerHTML = DATA.kpis.map(x=>
+    `<div class="kpi"><div class="v">${x.value}</div><div class="k">${x.key}</div></div>`
+  ).join("");
+  const t = document.getElementById("detail");
+  t.innerHTML =
+    "<thead><tr><th>stage</th><th class='n'>min</th><th class='n'>median</th>" +
+    "<th class='n'>p90</th><th class='n'>max</th><th class='n'>n</th></tr></thead><tbody>" +
+    DATA.detail.map(r=>`<tr><td>${r.stage}</td><td class='n'>${r.min}</td>` +
+      `<td class='n'><b>${r.median}</b></td><td class='n'>${r.p90}</td>` +
+      `<td class='n'>${r.max}</td><td class='n'>${r.n}</td></tr>`).join("") +
+    "</tbody>";
+}
+
+function render(){ drawTabs(); drawMain(); drawTurns(); drawLegend(); }
+
+document.getElementById("tag").textContent = DATA.tag;
+document.getElementById("sysline").textContent = DATA.sysline;
+drawDetail();
+render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>

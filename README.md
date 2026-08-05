@@ -13,7 +13,16 @@ mic ──▶ VAD ──▶ STT ──▶ [camera, only when asked] ──▶ VL
 
 ## Time to first audio — v0.1
 
-<img src="bench/results/v0.1/ttfa.svg" alt="TTFA breakdown for v0.1" width="100%">
+### ▶ [Open the interactive dashboard](https://similas.github.io/voice-companion/)
+
+Hover any stage for its share of the turn, toggle stages on and off, switch between the
+isolated benchmark and the live conversation, and hover individual turns to see what was
+said and what came back. The image below is a static fallback — GitHub sanitizes HTML in
+READMEs, so the interactive version has to live on Pages.
+
+<a href="https://similas.github.io/voice-companion/">
+  <img src="bench/results/v0.1/ttfa.svg" alt="TTFA breakdown for v0.1" width="100%">
+</a>
 
 | path | benchmark (components) | live conversation (median) |
 |---|---|---|
@@ -186,11 +195,19 @@ The venv lives **outside** the project on purpose: `nltk` 3.10 refuses to import
 located under the current working directory, so a `./.venv` makes every dependency
 unimportable.
 
-Reproduce the benchmark:
+Reproduce the benchmark and regenerate both charts:
 
 ```bash
-python bench/benchmark.py --reps 3 --tag v0.1
-python bench/make_chart.py --tag v0.1
+python bench/benchmark.py      --reps 3 --tag v0.1   # measure
+python bench/make_chart.py     --tag v0.1            # static SVG for this README
+python bench/make_dashboard.py --tag v0.1            # interactive docs/index.html
+```
+
+`docs/index.html` is self-contained — data inlined as JSON, no CDN, no build step — so it
+also works opened straight from disk:
+
+```bash
+python3 -m http.server 8081 --directory docs   # then open http://localhost:8081
 ```
 
 ---
