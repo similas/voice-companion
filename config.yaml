@@ -1,0 +1,244 @@
+# Local voice+vision companion — all tunables live here.
+# Nothing in app/ hardcodes a model name or device; change it here.
+
+# ---------------------------------------------------------------------------
+# AUDIO DEVICES
+# ---------------------------------------------------------------------------
+# Indices are PyAudio device indices, NOT ALSA card numbers. They differ.
+# Run `python tools/check_env.py --list-audio` to print the mapping, then set
+# them here. null = let PyAudio pick the system default.
+#
+# Current hardware (detected 2026-08-04):
+#   mic  : EMEET SmartCam C960 built-in  (ALSA hw:0,0)
+#   out  : alsa_output.platform-sound.analog-stereo  (the only sink present)
+#
+# When the reSpeaker XVF3800 arrives, re-run check_env.py and change input_device
+# only — nothing else in the project needs to know.
+audio:
+  # VERIFIED WORKING 2026-08-04 (see tools/check_env.py --list-audio):
+  #   idx 0  = EMEET C960 mic, direct ALSA hw:0,0
+  #   idx 30 = "pulse" -> PipeWire -> whatever the current default source/sink is
+  #
+  # Both are set to 30 on purpose.
+  #
+  # OUTPUT MUST GO THROUGH 30 TO REACH THE BLUETOOTH SPEAKER. PortAudio speaks
+  # ALSA, and a Bluetooth sink is a PipeWire node, not an ALSA card — it does not
+  # appear in the PyAudio device list at all. Routing through "pulse" hands the
+  # audio to PipeWire, which sends it to the default sink (the ALbose speaker).
+  # Measured: idx 30 played a test WAV to the speaker successfully.
+  #
+  # INPUT also uses 30 so that swapping the mic is a PipeWire default change
+  # rather than an index hunt — which is what you want for the reSpeaker XVF3800.
+  # If you prefer to pin the webcam mic explicitly, set input_device: 0 (also
+  # verified working, even while PipeWire holds the device).
+  input_device: 30          # "pulse" -> PipeWire default source (C960 mic)
+  output_device: 30         # "pulse" -> PipeWire default sink (ALbose speaker)
+
+  # Forced at startup so a speaker that remembers 100% from a previous session
+  # cannot blast you. Raise/lower to taste.
+  output_volume: 40
+
+  # Output runs at the Bluetooth sink's native 48 kHz. At 16 kHz, PipeWire had to
+  # resample again on top of Piper's own conversion, and the result crackled over
+  # A2DP. Set this to 48000 for Bluetooth; 16000 is fine for a wired card.
+  output_sample_rate: 48000
+
+  # Playback chunk size in units of 10 ms. Bluetooth jitters far more than a local
+  # sound card and underruns on 10 ms chunks, which is heard as crackling.
+  # 4 = 40 ms buffers. Raise to 6-8 if it still crackles, lower for less latency.
+  out_chunk_10ms: 4
+  # 16 kHz is what both Whisper and Silero VAD want. Piper outputs 22050 Hz and
+  # pipecat resamples it to this rate for playback.
+  sample_rate: 16000
+  channels: 1
+
+  # ECHO SUPPRESSION — leave this on with a room speaker.
+  #
+  # Without it the bot hears its own voice through the mic, transcribes it as your
+  # next turn, and talks to itself indefinitely. This was observed live: it
+  # answered "two plus two", heard "Four", replied to that, and ran six turns of
+  # self-conversation before being stopped.
+  #
+  # This gate simply discards transcriptions that arrive while the bot is
+  # speaking, plus echo_tail_secs afterwards for room reverb. Consequence: no
+  # barge-in while the bot is talking. That is unavoidable with a single shared
+  # speaker and no acoustic echo cancellation — "user interrupts" and "bot hears
+  # itself" are the same signal. Use headphones (or set up PipeWire AEC, see
+  # README) if you need true barge-in.
+  suppress_echo: true
+  # Keep the mic closed for this long AFTER the bot's playback is reported done.
+  # It must cover Bluetooth's output latency: Pipecat reports "stopped speaking"
+  # when it finishes writing to the device, but A2DP buffers mean the speaker is
+  # still making sound for a few hundred ms afterwards. At 0.4-0.6 s the tail of
+  # the bot's own reply still leaked in and was transcribed as a user turn.
+  # 1.2 s is comfortable for Bluetooth; drop to ~0.4 for a wired speaker.
+  echo_tail_secs: 0.5
+
+# ---------------------------------------------------------------------------
+# CAMERA
+# ---------------------------------------------------------------------------
+camera:
+  device: 0                 # /dev/video0 = EMEET C960
+  # 1280x720 is plenty: Gemma 3 downsamples to 896x896 internally, so capturing
+  # 1080p just costs decode time for pixels the model throws away.
+  width: 1280
+  height: 720
+  # A frame is JPEG-encoded before being sent. Longest edge is capped at this;
+  # smaller = faster vision turns, less detail.
+  max_edge: 896
+  jpeg_quality: 85
+  # The camera is kept open and drained by a background thread at this rate so
+  # that a vision turn gets a FRESH frame with ~0 ms capture latency. Without
+  # draining, V4L2 hands you a buffered frame from whenever it last filled up.
+  # Higher = fresher but more CPU. 5 fps at 720p is a few percent of one core.
+  # 2 fps, not 5: the decode runs on the CPU and competes with Whisper and the
+  # LLM. Vision turns are rare, and 2 fps still keeps the newest frame ~500 ms
+  # fresh, which is invisible in a spoken conversation.
+  poll_fps: 2
+
+# ---------------------------------------------------------------------------
+# SPEECH TO TEXT
+# ---------------------------------------------------------------------------
+stt:
+  # MEASURED on this device with a 3.58 s utterance (short-form conversational
+  # speech, which is all this ever sees):
+  #   tiny  853 ms  RTF 0.24x  -> "Hello there, what is 2 plus 2? Please answer briefly."
+  #   base 1369 ms  RTF 0.38x  -> "Hello there, what is 2 plus 2, please answer briefly."
+  # Identical content, 516 ms cheaper. STT is the largest fixed cost in the chain,
+  # so tiny is the right default. Switch to base if you hit accuracy trouble with
+  # accents, names, or background noise — and measure it in the CSV.
+  model: tiny               # tiny | base | small | medium | large-v3
+  device: cpu               # 'cpu' — see README: CTranslate2 has no Jetson CUDA build
+  compute_type: int8        # int8 on CPU is ~2x faster than float32, same accuracy here
+  language: en
+  # Whisper INVENTS words from silence, and `tiny` is the worst offender. Observed
+  # from an empty room: "Jetson Ornum", "Plaint to the Illumature to..." — each
+  # opened a turn and got a real spoken reply, so the bot was answering the air.
+  # no_speech_prob is Whisper's own confidence that a segment has no speech;
+  # segments above this are discarded. min_chars is a second, cruder filter for
+  # whatever slips past. Lower no_speech_prob (0.4) if it ignores real speech;
+  # raise it (0.8) if it still talks to itself.
+  no_speech_prob: 0.6
+  min_chars: 8
+
+# ---------------------------------------------------------------------------
+# BRAIN (vision + language)
+# ---------------------------------------------------------------------------
+llm:
+  # A DERIVED model, not plain gemma3:4b. Created with:
+  #
+  #   printf 'FROM gemma3:4b\nPARAMETER num_ctx 2048\nPARAMETER num_gpu 99\n' > Modelfile
+  #   ollama create gemma3:4b-jetson -f Modelfile
+  #
+  # `num_gpu 99` forces every layer onto the GPU. This matters a lot here:
+  # Ollama's own memory estimator is conservative on unified memory and left
+  # 20% of the layers on the CPU even with 4.8 GB free, silently.
+  #
+  # Measured on this device:
+  #   gemma3:4b         80% GPU   14.7 tok/s   3.5 GB
+  #   gemma3:4b-jetson  100% GPU  16.1 tok/s   2.9 GB   <- this one
+  #
+  # Both are vision-capable; the derived model inherits the VLM projector.
+  model: gemma3:4b-jetson
+  base_url: http://localhost:11434/v1
+  # Documented here for reference only — num_ctx cannot be set over Ollama's
+  # OpenAI-compatible API. It is baked into the derived model above.
+  num_ctx: 2048
+  temperature: 0.7
+  # Short replies are not just nicer to listen to, they are FASTER: audio starts
+  # after the first sentence, and a long reply just means the bot talks over your
+  # next question. 60 tokens is roughly 2 spoken sentences.
+  max_tokens: 60
+  # Kept deliberately terse. Every word here is prefill on EVERY turn, and prefill
+  # is pure added time-to-first-token.
+  system_prompt: >
+    You are a local voice assistant. Reply in one or two short spoken sentences.
+    No markdown, lists, or emoji. If shown an image, say briefly what you see.
+
+# ---------------------------------------------------------------------------
+# TEXT TO SPEECH
+# ---------------------------------------------------------------------------
+tts:
+  voice: en_US-lessac-medium
+  models_dir: models        # relative to project root
+  # use_cuda requires an onnxruntime built with CUDA. The PyPI aarch64 wheel is
+  # CPU-only, so this must stay false. Piper on CPU already runs at ~0.09x
+  # realtime here, so there is nothing to gain.
+  use_cuda: false
+
+# ---------------------------------------------------------------------------
+# VOICE ACTIVITY / TURN DETECTION
+# ---------------------------------------------------------------------------
+vad:
+  # How much silence means "they're done talking". This is THE knob that trades
+  # responsiveness against cutting you off mid-sentence.
+  #   0.4s = snappy, will interrupt you if you pause to think
+  #   0.8s = natural for most people
+  #   1.2s = patient, feels sluggish
+  # Set to 0.5 for responsiveness. NOTE this time is spent BEFORE the CSV's
+  # reference point (t_user_stopped_speaking = 0), so it does not appear in
+  # total_latency — but you feel every millisecond of it. Raise it if it clips
+  # the ends of your sentences.
+  stop_secs: 0.5
+  start_secs: 0.2           # how much speech before we believe it's speech
+  # RAISED from Silero's usual 0.7/0.6. Measured ambient noise here is only 0.018
+  # peak, so the room is quiet — but an omnidirectional webcam mic also picks up a
+  # TELEVISION clearly, and Whisper faithfully transcribes it. Real examples this
+  # produced: "Thanks for watching.", "This is the first lesson." Each opened a
+  # turn and got a spoken reply, so the bot was answering the TV.
+  #
+  # Higher thresholds mean you must speak up a little, but background dialogue no
+  # longer wins. If it still answers the TV, raise confidence toward 0.95. The
+  # real fix is a directional mic — the reSpeaker XVF3800's beamforming is exactly
+  # the right tool, or add a wake word.
+  confidence: 0.8           # Silero speech probability threshold
+  min_volume: 0.6
+
+# ---------------------------------------------------------------------------
+# VISION TRIGGERING
+# ---------------------------------------------------------------------------
+# A camera frame is sent ONLY when the transcript matches one of these. Sending
+# an image every turn roughly triples time-to-first-token, so it must be opt-in.
+# Matching is case-insensitive substring on the transcript.
+vision:
+  enabled: true
+  triggers:
+    - what do you see
+    - what can you see
+    - can you see
+    - do you see
+    - what is this
+    - what's this
+    - what is that
+    - what's that
+    - look at
+    - take a look
+    - what am i holding
+    - what am i wearing
+    - describe what
+    - describe this
+    - describe the
+    - how do i look
+    - what color
+    - what colour
+    - read this
+    - read that
+    - what does this say
+    - in front of you
+    - point the camera
+    - use your eyes
+    - use the camera
+    - check the camera
+
+# ---------------------------------------------------------------------------
+# LATENCY LOGGING
+# ---------------------------------------------------------------------------
+metrics:
+  csv_dir: logs             # one timestamped CSV per run
+  console: true             # per-turn summary printed to stdout
+
+# ---------------------------------------------------------------------------
+# INTERRUPTION (barge-in)
+# ---------------------------------------------------------------------------
+interruption:
+  enabled: false            # bot speech is NOT interruptible; mic is closed while it talks

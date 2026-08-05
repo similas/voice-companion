@@ -1,0 +1,44 @@
+# Local voice+vision companion — Jetson Orin Nano (aarch64, JetPack 6.2, Py3.10)
+#
+# Every pin here was checked for an aarch64 cp310 wheel before being added.
+# Read the notes: this file encodes several hard ARM64 constraints.
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+# PINNED TO 0.0.108 ON PURPOSE — DO NOT "UPGRADE" TO 1.x ON THIS MACHINE.
+#
+# pipecat-ai 1.x requires onnxruntime~=1.24.3 as a CORE dependency, and
+# onnxruntime ships NO aarch64 wheel for any 1.24.x release (aarch64 wheels stop
+# at 1.23.2). 0.0.108 is the last release pinning onnxruntime~=1.23.2, which does
+# have an aarch64 wheel. Upgrading pipecat will break this install.
+#
+#   [whisper] -> faster-whisper   (STT)
+#   [piper]   -> piper-tts        (TTS)
+#   [local]   -> pyaudio          (mic in / speaker out; needs portaudio19-dev)
+#
+# NOTE: there is no [silero] extra in 0.0.108 — Silero VAD works off the core
+# onnxruntime dependency, so no extra is needed for VAD.
+pipecat-ai[whisper,piper,local]==0.0.108
+
+# ---------------------------------------------------------------------------
+# Vision
+# ---------------------------------------------------------------------------
+# Headless build: no GUI libs, ~90 MB smaller, and we only ever grab and encode
+# a frame — nothing is displayed. The system OpenCV is not reused because it is
+# built against numpy 1.21 while pipecat requires numpy >= 1.26.
+opencv-python-headless>=4.10,<5
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+PyYAML>=6,<7
+
+# ---------------------------------------------------------------------------
+# NOT required, deliberately:
+#   torch          — faster-whisper uses CTranslate2, Silero VAD uses
+#                    onnxruntime. Nothing here needs PyTorch, which saves
+#                    ~2 GB of the 8 GB shared budget. Do not add it.
+#   ffmpeg         — audio arrives as raw PCM from the mic, so Whisper never
+#                    needs to decode a container.
+# ---------------------------------------------------------------------------

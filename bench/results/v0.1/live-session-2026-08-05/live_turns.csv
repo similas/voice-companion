@@ -1,0 +1,17 @@
+turn,wall_clock,t_user_stopped_speaking,t_stt_done,t_vision_done,t_llm_first_token,t_llm_done,t_tts_first_audio,t_audio_playback_start,total_latency,vision_used,transcript_chars,transcript,reply_tokens,reply_chars,reply,interrupted
+1,2026-08-05T00:15:17.076,0.0,739.1,,3929.7,4980.5,4832.2,4837.9,4837.9,false,16,Can you hear me?,14,56,"Yes, I can hear you perfectly! How can I help you today?",false
+2,2026-08-05T00:15:58.846,0.0,759.0,781.0,7860.5,8926.4,9298.1,9304.0,9304.0,true,26,What do you see right now?,17,69,I see a man sitting on a couch in what appears to be his living room.,false
+3,2026-08-05T00:16:40.222,0.0,745.5,,3055.4,4419.9,4985.7,4995.4,4995.4,false,19,Count from 1 to 10.,14,58,"One, two, three, four, five, six, seven, eight, nine, ten!",false
+4,2026-08-05T00:17:53.615,0.0,846.6,,3048.4,3594.3,3809.3,3811.9,3811.9,false,50,What is the number that I'm showing with my hands?,8,32,You are holding up five fingers.,false
+5,2026-08-05T00:18:07.200,0.0,731.4,,2885.4,3494.9,3738.8,3741.7,3741.7,false,14,How about now?,10,41,You’re currently displaying four fingers.,false
+6,2026-08-05T00:18:22.681,0.0,727.2,746.1,7743.6,8194.8,8416.5,8418.5,8418.5,true,28,What am I holding right now?,8,33,You are holding a remote control.,false
+7,2026-08-05T00:19:04.266,0.0,711.1,,3086.1,3930.6,4183.3,4186.6,4186.6,false,22,How are you right now?,12,49,I’m functioning normally and ready to assist you!,false
+8,2026-08-05T00:19:28.569,0.0,693.1,,2947.1,4271.5,4668.3,4674.7,4674.7,false,26,What am I doing right now?,19,77,"You're sitting on a couch, looking at a tablet, and holding a remote control.",false
+9,2026-08-05T00:20:06.740,0.0,697.4,,3053.2,3866.0,4199.2,4203.3,4203.3,false,14,How about now?,16,63,You are currently smiling slightly while looking at the tablet.,false
+10,2026-08-05T00:20:47.013,0.0,819.0,,3352.4,3967.4,4193.2,4195.6,4195.6,false,57,What is the brand of the Mark here I'm holding right now?,8,33,It appears to be a Garmin remote.,false
+11,2026-08-05T00:21:04.804,0.0,838.7,,3167.3,3702.1,3871.3,3873.1,3873.1,false,59,What is the brand of the marker that I'm holding right now?,6,22,That’s an Ikea marker.,false
+12,2026-08-05T00:21:28.353,0.0,749.4,,3039.6,3996.4,4213.3,4216.0,4216.0,false,31,What is written on this marker?,10,39,I can see “SVEA” written on the marker.,false
+13,2026-08-05T00:22:03.390,0.0,777.7,,2990.1,3528.2,3695.0,3696.7,3696.7,false,30,What is the color of my shirt?,7,29,You are wearing a blue shirt!,false
+14,2026-08-05T00:22:25.433,0.0,803.7,,3221.4,5029.6,5613.2,5621.3,5621.3,false,53,List all the things you are saying in my living room.,25,100,"I’ve observed a man sitting on a couch, a tablet, an Ikea marker, a Garmin remote, and a television.",false
+15,2026-08-05T00:23:01.824,0.0,840.7,855.6,8010.9,9734.6,10302.0,10310.9,10310.9,true,35,How about now? What do you see now?,29,115,"I see the same living room setup as before—the man on the couch, the tablet, and the Ikea marker are still present.",false
+16,2026-08-05T00:23:59.564,0.0,809.3,,3260.4,4436.1,3963.3,3965.6,3965.6,false,47,The marker is not in the living room right now.,18,72,You’re absolutely correct! The marker is no longer visible in the image.,false

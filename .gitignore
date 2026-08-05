@@ -1,0 +1,17 @@
+# runtime artefacts
+logs/*.csv
+logs/*.log
+logs/*.wav
+stream.log
+
+# models are large binaries — fetched by piper.download_voices / ollama pull
+models/*.onnx
+models/*.onnx.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# benchmark scratch
+/tmp/
