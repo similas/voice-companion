@@ -27,11 +27,24 @@ class Camera:
     genuinely current while costing a few percent of one core.
     """
 
-    def __init__(self, device: int, width: int, height: int, poll_fps: float = 5.0):
+    def __init__(self, device: int, width: int, height: int, poll_fps: float = 5.0,
+                 idle_fps: float = 0.5, active_secs: float = 25.0):
         self.device = device
         self.width = width
         self.height = height
-        self.interval = 1.0 / max(0.5, poll_fps)
+        self.interval = 1.0 / max(0.1, poll_fps)
+        # Two rates. MJPEG decode at 720p is CPU work, and it was competing with
+        # Whisper, Piper and Ollama's CPU threads for 6 cores on EVERY turn —
+        # including the majority that never look at the camera. Measured effect of
+        # that contention: live latency ran ~47% above the isolated benchmark.
+        #
+        # So drain fast only when vision is plausibly about to be used (right
+        # after a vision turn), and idle very slowly otherwise. The first vision
+        # turn after a quiet spell pays one extra frame interval; every text turn
+        # gets the cores back.
+        self.idle_interval = 1.0 / max(0.05, idle_fps)
+        self.active_secs = active_secs
+        self._active_until = 0.0
 
         self._frame = None
         self._stamp = 0.0
@@ -39,6 +52,13 @@ class Camera:
         self._running = False
         self._cap = None
         self._thread: Optional[threading.Thread] = None
+        self.frames_decoded = 0
+        # Frame-reuse cache — see grab_jpeg().
+        self._last_jpeg = None
+        self._last_dims = None
+        self._last_small = None
+        self.reuse_hits = 0
+        self.fresh_encodes = 0
 
     def start(self) -> bool:
         # CAP_V4L2 is required, not optional: with the default backend the first
@@ -76,21 +96,61 @@ class Camera:
         while self._running:
             ok, frame = self._cap.read()
             if ok:
+                self.frames_decoded += 1
                 with self._lock:
                     self._frame = frame
                     self._stamp = time.time()
             else:
                 time.sleep(0.1)
-            time.sleep(self.interval)
+            hot = time.monotonic() < self._active_until
+            time.sleep(self.interval if hot else self.idle_interval)
 
-    def grab_jpeg(self, max_edge: int = 896, quality: int = 85
+    def mark_active(self):
+        """Vision was just used — drain fast for a while, follow-ups are likely."""
+        self._active_until = time.monotonic() + self.active_secs
+
+    def grab_jpeg(self, max_edge: int = 896, quality: int = 85, reuse_thresh: float = 0.0
                   ) -> Optional[Tuple[bytes, Tuple[int, int], float]]:
-        """Newest frame as JPEG bytes. Returns (jpeg, (w,h), age_seconds)."""
+        """
+        Newest frame as JPEG bytes. Returns (jpeg, (w,h), age_seconds).
+
+        If `reuse_thresh` > 0 and the scene has barely changed since the last call,
+        the PREVIOUS JPEG is returned byte-for-byte instead of a fresh encode.
+
+        That is not a micro-optimisation. llama.cpp caches the vision encoder
+        output keyed on the image, so a byte-identical image skips the SigLIP
+        forward pass entirely. Measured on this device:
+
+            fresh frame   +4785 ms to first token
+            same frame     +332 ms to first token      (14x cheaper)
+
+        The whole 4.5 s vision penalty is that encoder pass. For follow-ups like
+        "how about now?" or "what colour is it?" against a static room, reusing the
+        frame is both correct and dramatically faster.
+        """
         with self._lock:
             frame = None if self._frame is None else self._frame.copy()
             age = time.time() - self._stamp
         if frame is None:
             return None
+
+        if reuse_thresh > 0 and self._last_small is not None:
+            small = cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            # Mean absolute difference on a 64x36 grey thumbnail: ~0.2 ms, and
+            # robust to sensor noise while still catching a person moving or an
+            # object being held up.
+            diff = float(cv2.absdiff(gray, self._last_small).mean())
+            if diff < reuse_thresh:
+                self.reuse_hits += 1
+                logger.info(f"vision: scene unchanged (diff {diff:.2f} < "
+                            f"{reuse_thresh}), reusing cached frame "
+                            f"— skips the vision encoder")
+                return self._last_jpeg, self._last_dims, age
+            self._last_small = gray
+        elif reuse_thresh > 0:
+            small = cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA)
+            self._last_small = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
         h, w = frame.shape[:2]
         # Downscale before encoding. Gemma 3 resizes to 896x896 internally, so
@@ -106,7 +166,10 @@ class Camera:
                                [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         if not ok:
             return None
-        return buf.tobytes(), (w, h), age
+        jpeg = buf.tobytes()
+        self._last_jpeg, self._last_dims = jpeg, (w, h)
+        self.fresh_encodes += 1
+        return jpeg, (w, h), age
 
     def stop(self):
         self._running = False

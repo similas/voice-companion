@@ -90,6 +90,28 @@ def check_ollama(model):
     return False
 
 
+def check_llama_server(cfg):
+    """Health of the llama.cpp server, when that is the configured backend."""
+    port = cfg.get("llm.llama_server.port", 8081)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health",
+                                    timeout=5) as r:
+            up = b"ok" in r.read()
+    except Exception:
+        up = False
+    if not up:
+        line(BAD, "llama-server", f"not responding on :{port} — "
+                                  f"run tools/llama_server.sh start")
+        return False
+    log = ROOT / "logs" / "llama-server.log"
+    if log.exists() and "no usable GPU found" in log.read_text(errors="ignore"):
+        line(BAD, "llama-server", "running WITHOUT the GPU (~2x slower) — "
+                                  "tools/llama_server.sh restart")
+        return False
+    line(OK, "llama-server", f":{port} healthy, GPU backend loaded")
+    return True
+
+
 def check_gpu_offload(model):
     """The single most important performance check on this board.
 
@@ -124,7 +146,7 @@ def check_gpu_offload(model):
     line(WARN, "gpu offload", rows[0][:60])
 
 
-def check_memory():
+def check_memory(backend="ollama", server_up=False):
     info = {}
     for ln in open("/proc/meminfo"):
         k, _, v = ln.partition(":")
@@ -133,6 +155,13 @@ def check_memory():
     # Gemma 3 4B needs ~2.4 GB of weights plus ~1 GB of context/compute buffers
     # to land entirely on the GPU. Below that it degrades to CPU.
     need = 3600
+    if backend == "llama_server" and server_up:
+        # The model is ALREADY resident inside llama-server, so low free memory is
+        # the expected steady state rather than a problem. Flagging it as a failure
+        # here was simply wrong.
+        line(OK, "memory available", f"{avail} MB of {total} MB "
+                                     f"(model already resident in llama-server)")
+        return True
     status = OK if avail >= need else (WARN if avail >= 2500 else BAD)
     line(status, "memory available", f"{avail} MB of {total} MB "
                                      f"(need ~{need} MB free for GPU offload)")
@@ -251,8 +280,17 @@ def main():
     print("\n=== python + packages ===")
     ok = check_python()
     ok &= check_imports()
-    print("\n=== models ===")
-    ok &= check_ollama(cfg.get("llm.model", "gemma3:4b"))
+    backend = (cfg.get("llm.backend") or "ollama").strip()
+    print(f"\n=== models (backend: {backend}) ===")
+    server_up = False
+    if backend == "llama_server":
+        server_up = check_llama_server(cfg)
+        ok &= server_up
+        # Ollama is still needed as the model STORE — llama_server reads the GGUF
+        # blob that `ollama pull` downloaded.
+        ok &= check_ollama(cfg.get("llm.llama_server.model_tag", "gemma3:4b"))
+    else:
+        ok &= check_ollama(cfg.get("llm.model", "gemma3:4b"))
     voice = cfg.path("tts.models_dir", "models") / f"{cfg.get('tts.voice')}.onnx"
     if voice.exists():
         line(OK, "piper voice", f"{voice.name} ({voice.stat().st_size // 1048576} MB)")
@@ -260,8 +298,9 @@ def main():
         line(BAD, "piper voice", f"missing: {voice}")
         ok = False
     print("\n=== hardware ===")
-    check_memory()
-    check_gpu_offload(cfg.get("llm.model", "gemma3:4b"))
+    check_memory(backend, server_up)
+    if backend != "llama_server":
+        check_gpu_offload(cfg.get("llm.model", "gemma3:4b"))
     check_camera(cfg.get("camera.device", 0),
                  cfg.get("camera.width", 1280), cfg.get("camera.height", 720))
     check_audio_devices()

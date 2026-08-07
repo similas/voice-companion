@@ -1,0 +1,376 @@
+{
+  "tag": "v0.3",
+  "reps": 3,
+  "system": {
+    "timestamp_utc": "2026-08-07T02:58:16+00:00",
+    "device": "NVIDIA Jetson Orin Nano Super (8GB)",
+    "cpu": "ARMv8 Processor rev 1 (v8l)",
+    "cores": 6,
+    "gpu": "Ampere, 1024 CUDA cores, compute 8.7 (unified memory)",
+    "l4t": "# R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025",
+    "kernel": "5.15.148-tegra",
+    "python": "3.10.12",
+    "mem_total_mb": 7619,
+    "mem_available_mb": 2068,
+    "power_mode": "NV Power Mode: MAXN_SUPER 2",
+    "ollama_version": "ollama version is 0.32.5",
+    "ollama_ps": "NAME    ID    SIZE    PROCESSOR    CONTEXT    UNTIL",
+    "models": {
+      "stt": "faster-whisper tiny (int8, cpu)",
+      "llm": "gemma3:4b-jetson via llama_server",
+      "tts": "piper en_US-lessac-medium",
+      "vad": "silero (onnxruntime)"
+    }
+  },
+  "config": {
+    "stt": {
+      "model": "tiny",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": "en",
+      "no_speech_prob": 0.6,
+      "min_chars": 8,
+      "speculative": true
+    },
+    "llm": {
+      "backend": "llama_server",
+      "llama_server": {
+        "port": 8081,
+        "model_tag": "gemma3:4b",
+        "ctx_size": 2048,
+        "threads": 4
+      },
+      "model": "gemma3:4b-jetson",
+      "base_url": "http://localhost:11434/v1",
+      "num_ctx": 2048,
+      "temperature": 0.7,
+      "max_tokens": 60,
+      "max_history_turns": 8
+    },
+    "tts": {
+      "voice": "en_US-lessac-medium",
+      "models_dir": "models",
+      "use_cuda": false,
+      "clause_streaming": true,
+      "min_clause_chars": 18,
+      "first_chunk_chars": 46
+    },
+    "vad": {
+      "stop_secs": 0.5,
+      "start_secs": 0.2,
+      "confidence": 0.8,
+      "min_volume": 0.6
+    },
+    "camera": {
+      "device": 0,
+      "width": 1280,
+      "height": 720,
+      "max_edge": 896,
+      "jpeg_quality": 85,
+      "poll_fps": 4,
+      "idle_fps": 0.4,
+      "active_secs": 25,
+      "reuse_threshold": 0
+    },
+    "audio": {
+      "input_device": 30,
+      "output_device": 30,
+      "output_volume": 40,
+      "output_sample_rate": 48000,
+      "out_chunk_10ms": 4,
+      "sample_rate": 16000,
+      "channels": 1,
+      "suppress_echo": true,
+      "echo_tail_secs": 0.5
+    }
+  },
+  "stt": {
+    "load_ms": 931.1,
+    "latency_ms": {
+      "n": 8,
+      "min": 715.2,
+      "median": 752.0,
+      "mean": 751.4,
+      "p90": 787.7,
+      "max": 799.0,
+      "stdev": 29.4
+    },
+    "realtime_factor": 0.374,
+    "wer_mean": 0.0996,
+    "wer_median": 0.0,
+    "exact_match_rate": 0.625,
+    "examples": [
+      {
+        "said": "What is the capital of France?",
+        "heard": "What is the capital of France?",
+        "wer": 0.0,
+        "ms": 725.0
+      },
+      {
+        "said": "Can you hear me clearly?",
+        "heard": "Can you hear me clearly?",
+        "wer": 0.0,
+        "ms": 717.8
+      },
+      {
+        "said": "Tell me one interesting fact about the ocean.",
+        "heard": "Tell me one interesting fact about the ocean.",
+        "wer": 0.0,
+        "ms": 787.7
+      },
+      {
+        "said": "What time does the sun usually set in summer?",
+        "heard": "What time does the sun usually set in summer?",
+        "wer": 0.0,
+        "ms": 799.0
+      },
+      {
+        "said": "Count from one to five for me.",
+        "heard": "count from 1 to 5 for me.",
+        "wer": 0.286,
+        "ms": 745.8
+      },
+      {
+        "said": "How would you describe the colour blue to someone?",
+        "heard": "How would you describe the color blue to someone?",
+        "wer": 0.111,
+        "ms": 762.6
+      },
+      {
+        "said": "Give me a short suggestion for dinner tonight.",
+        "heard": "Give me a short suggestion for dinner tonight.",
+        "wer": 0.0,
+        "ms": 758.2
+      },
+      {
+        "said": "What is two plus two?",
+        "heard": "What is 2 plus 2?",
+        "wer": 0.4,
+        "ms": 715.2
+      }
+    ]
+  },
+  "stt_speculative": {
+    "wait_after_turn_end_ms": {
+      "n": 7,
+      "min": 174.2,
+      "median": 201.5,
+      "mean": 213.1,
+      "p90": 244.5,
+      "max": 266.4,
+      "stdev": 29.7
+    },
+    "raw_decode_median_ms": 752.0,
+    "saved_ms": 550.5,
+    "speculation_hits": 8,
+    "speculation_misses": 0,
+    "wer_mean": 0.1138,
+    "examples": [
+      {
+        "said": "Can you hear me clearly?",
+        "heard": "Can you hear me clearly?"
+      },
+      {
+        "said": "Tell me one interesting fact about the ocean.",
+        "heard": "Tell me one interesting fact about the ocean."
+      },
+      {
+        "said": "What time does the sun usually set in summer?",
+        "heard": "What time does the sun usually set in summer?"
+      },
+      {
+        "said": "Count from one to five for me.",
+        "heard": "count from 1 to 5 for me."
+      }
+    ]
+  },
+  "tts": {
+    "load_ms": 1460.9,
+    "synth_ms": {
+      "n": 3,
+      "min": 234.0,
+      "median": 253.2,
+      "mean": 255.5,
+      "p90": 279.2,
+      "max": 279.2,
+      "stdev": 18.5
+    },
+    "realtime_factor": 0.086,
+    "sample_text": "That's four. Is there anything else you would like to know?"
+  },
+  "llm_text": {
+    "mode": "text",
+    "ttft_ms": {
+      "n": 18,
+      "min": 157.6,
+      "median": 158.5,
+      "mean": 180.4,
+      "p90": 234.2,
+      "max": 240.2,
+      "stdev": 32.1
+    },
+    "total_ms": {
+      "n": 18,
+      "min": 962.6,
+      "median": 1512.3,
+      "mean": 1493.5,
+      "p90": 1858.8,
+      "max": 2221.3,
+      "stdev": 369.2
+    },
+    "tokens_per_s": 17.5,
+    "samples": [
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It\u2019s a beautiful city, isn\u2019t it?",
+        "ttft_ms": 234.2,
+        "tokens": 19
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It\u2019s a beautiful city!",
+        "ttft_ms": 158.6,
+        "tokens": 14
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It\u2019s a beautiful city!",
+        "ttft_ms": 159.2,
+        "tokens": 14
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly! How can I help you today?",
+        "ttft_ms": 202.6,
+        "tokens": 15
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly! How can I help you today?",
+        "ttft_ms": 157.9,
+        "tokens": 15
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly! How can I help you today?",
+        "ttft_ms": 157.8,
+        "tokens": 15
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "The ocean covers over 70% of our planet! Did you know that the deepest part of the ocean, the Mariana Trench, is deeper than Mount Everest is tall?",
+        "ttft_ms": 217.8,
+        "tokens": 35
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "The ocean covers over 70% of our planet! Did you know that it contains more than 80% of the Earth\u2019s living organisms?",
+        "ttft_ms": 158.4,
+        "tokens": 32
+      }
+    ]
+  },
+  "llm_vision": {
+    "mode": "vision",
+    "ttft_ms": {
+      "n": 4,
+      "min": 5106.6,
+      "median": 5176.2,
+      "mean": 5186.5,
+      "p90": 5286.8,
+      "max": 5286.8,
+      "stdev": 67.0
+    },
+    "total_ms": {
+      "n": 4,
+      "min": 6338.4,
+      "median": 6401.3,
+      "mean": 6430.2,
+      "p90": 6579.6,
+      "max": 6579.6,
+      "stdev": 91.6
+    },
+    "tokens_per_s": 17.29,
+    "samples": [
+      {
+        "prompt": "What do you see right now?",
+        "reply": "I see a dark room with a red light. It appears to be a nighttime scene.",
+        "ttft_ms": 5286.8,
+        "tokens": 18
+      },
+      {
+        "prompt": "Describe this room briefly.",
+        "reply": "It appears to be a dark room with a red light on the wall. It looks quite empty and shadowy.",
+        "ttft_ms": 5151.1,
+        "tokens": 22
+      },
+      {
+        "prompt": "What objects are on the table?",
+        "reply": "I can\u2019t quite see what\u2019s on the table in the image. It appears to be a dark surface.",
+        "ttft_ms": 5201.4,
+        "tokens": 24
+      },
+      {
+        "prompt": "What am I holding right now?",
+        "reply": "It appears you are holding a dark object. I can\u2019t quite tell what it is from this image.",
+        "ttft_ms": 5106.6,
+        "tokens": 22
+      }
+    ]
+  },
+  "camera": {
+    "capture_ms": {
+      "n": 6,
+      "min": 10.1,
+      "median": 12.7,
+      "mean": 12.5,
+      "p90": 12.9,
+      "max": 14.8,
+      "stdev": 1.4
+    },
+    "frame_reuse": null,
+    "frame_age_ms": {
+      "n": 6,
+      "min": 153.7,
+      "median": 1409.4,
+      "mean": 1297.7,
+      "p90": 1993.6,
+      "max": 2053.8,
+      "stdev": 667.5
+    },
+    "jpeg_kb": {
+      "n": 6,
+      "min": 9.7,
+      "median": 9.7,
+      "mean": 9.7,
+      "p90": 9.8,
+      "max": 9.8,
+      "stdev": 0.0
+    },
+    "encoded_size": "896x503",
+    "capture_resolution": "1280x720",
+    "distinct_frames_for_vision_bench": 2
+  },
+  "vision_trigger": {
+    "cases": 17,
+    "correct": 17,
+    "accuracy": 1.0,
+    "sticky_followup_works": true,
+    "failures": []
+  },
+  "composed_ttfa": {
+    "voice_to_voice": {
+      "stt_ms": 201.5,
+      "llm_first_token_ms": 158.5,
+      "tts_first_audio_ms": 253.2,
+      "ttfa_ms": 613.2
+    },
+    "voice_image_to_voice": {
+      "stt_ms": 201.5,
+      "llm_first_token_ms": 5176.2,
+      "tts_first_audio_ms": 253.2,
+      "camera_capture_ms": 12.7,
+      "ttfa_ms": 5643.6
+    }
+  }
+}

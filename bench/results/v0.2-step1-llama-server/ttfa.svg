@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="366" viewBox="0 0 900 366" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<style>
+  .ttl { fill: #1f2328; font-weight: 600 }
+  .lbl { fill: #32383f }
+  .sub, .ax { fill: #6e7781 }
+  @media (prefers-color-scheme: dark) {
+    .ttl { fill: #e6edf3 }
+    .lbl { fill: #c9d1d9 }
+    .sub, .ax { fill: #8b949e }
+  }
+</style>
+<text x="0" y="24" font-size="17" class="ttl" fill="#adbac7">Time to first audio &#8212; v0.2-step1-llama-server</text>
+<text x="0" y="46" font-size="12.5" class="sub" fill="#8b949e">Jetson Orin Nano Super 8GB &#183; fully local &#183; bars = component benchmark, diamond = median of a real conversation</text>
+<line x1="210.0" y1="74" x2="210.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="210.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">0s</text>
+<line x1="270.0" y1="74" x2="270.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="270.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">1s</text>
+<line x1="330.0" y1="74" x2="330.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="330.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">2s</text>
+<line x1="390.0" y1="74" x2="390.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="390.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">3s</text>
+<line x1="450.0" y1="74" x2="450.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="450.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">4s</text>
+<line x1="510.0" y1="74" x2="510.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="510.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">5s</text>
+<line x1="570.0" y1="74" x2="570.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="570.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">6s</text>
+<line x1="630.0" y1="74" x2="630.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="630.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">7s</text>
+<line x1="690.0" y1="74" x2="690.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="690.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">8s</text>
+<line x1="750.0" y1="74" x2="750.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="750.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">9s</text>
+<line x1="810.0" y1="74" x2="810.0" y2="314" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="810.0" y="334" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">10s</text>
+<text x="0" y="102.7" font-size="13.5" font-weight="600" class="lbl" fill="#adbac7">voice → voice</text>
+<rect x="210.0" y="84.0" width="44.5" height="26" fill="#4c9f70" rx="2"/>
+<rect x="254.5" y="84.0" width="9.5" height="26" fill="#3f6fb5" rx="2"/>
+<rect x="264.0" y="84.0" width="15.4" height="26" fill="#a4599b" rx="2"/>
+<text x="289.4" y="102.7" font-size="13" font-weight="600" class="lbl" fill="#adbac7">1.16s</text>
+<rect x="210" y="122" width="251.7" height="10" fill="#8b949e" fill-opacity="0.3" rx="2"/>
+<polygon points="455.7,127 461.736,121 467.7,127 461.736,133" class="lbl" fill="#adbac7"/>
+<text x="473.7" y="131.0" font-size="11.5" class="ax" fill="#8b949e">4.20s live</text>
+<text x="0" y="206.7" font-size="13.5" font-weight="600" class="lbl" fill="#adbac7">voice + image → voice</text>
+<rect x="210.0" y="188.0" width="44.5" height="26" fill="#4c9f70" rx="2"/>
+<rect x="254.5" y="188.0" width="0.8" height="26" fill="#c9a227" rx="2"/>
+<rect x="255.3" y="188.0" width="303.2" height="26" fill="#3f6fb5" rx="2"/>
+<text x="406.9" y="205.7" font-size="11" fill="#0d1117" fill-opacity="0.82" text-anchor="middle">5054</text>
+<rect x="558.5" y="188.0" width="15.4" height="26" fill="#a4599b" rx="2"/>
+<text x="583.9" y="206.7" font-size="13" font-weight="600" class="lbl" fill="#adbac7">6.07s</text>
+<rect x="210" y="226" width="558.2" height="10" fill="#8b949e" fill-opacity="0.3" rx="2"/>
+<polygon points="762.2,231 768.24,225 774.2,231 768.24,237" class="lbl" fill="#adbac7"/>
+<text x="780.2" y="235.0" font-size="11.5" class="ax" fill="#8b949e">9.30s live</text>
+<rect x="210" y="345" width="11" height="11" fill="#4c9f70" rx="2"/>
+<text x="226" y="354" font-size="11.5" class="ax" fill="#8b949e">STT</text>
+<rect x="251.0" y="345" width="11" height="11" fill="#c9a227" rx="2"/>
+<text x="267.0" y="354" font-size="11.5" class="ax" fill="#8b949e">camera</text>
+<rect x="313.0" y="345" width="11" height="11" fill="#3f6fb5" rx="2"/>
+<text x="329.0" y="354" font-size="11.5" class="ax" fill="#8b949e">LLM first token</text>
+<rect x="438.0" y="345" width="11" height="11" fill="#a4599b" rx="2"/>
+<text x="454.0" y="354" font-size="11.5" class="ax" fill="#8b949e">TTS first audio</text>
+</svg>

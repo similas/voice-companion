@@ -1,0 +1,338 @@
+{
+  "tag": "v0.2",
+  "reps": 3,
+  "system": {
+    "timestamp_utc": "2026-08-06T21:10:46+00:00",
+    "device": "NVIDIA Jetson Orin Nano Super (8GB)",
+    "cpu": "ARMv8 Processor rev 1 (v8l)",
+    "cores": 6,
+    "gpu": "Ampere, 1024 CUDA cores, compute 8.7 (unified memory)",
+    "l4t": "# R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025",
+    "kernel": "5.15.148-tegra",
+    "python": "3.10.12",
+    "mem_total_mb": 7619,
+    "mem_available_mb": 1068,
+    "power_mode": "NV Power Mode: MAXN_SUPER 2",
+    "ollama_version": "ollama version is 0.32.5",
+    "ollama_ps": "NAME    ID    SIZE    PROCESSOR    CONTEXT    UNTIL",
+    "models": {
+      "stt": "faster-whisper tiny (int8, cpu)",
+      "llm": "gemma3:4b-jetson via llama_server",
+      "tts": "piper en_US-lessac-medium",
+      "vad": "silero (onnxruntime)"
+    }
+  },
+  "config": {
+    "stt": {
+      "model": "tiny",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": "en",
+      "no_speech_prob": 0.6,
+      "min_chars": 8
+    },
+    "llm": {
+      "backend": "llama_server",
+      "llama_server": {
+        "port": 8081,
+        "model_tag": "gemma3:4b",
+        "ctx_size": 2048,
+        "threads": 4
+      },
+      "model": "gemma3:4b-jetson",
+      "base_url": "http://localhost:11434/v1",
+      "num_ctx": 2048,
+      "temperature": 0.7,
+      "max_tokens": 60,
+      "max_history_turns": 8
+    },
+    "tts": {
+      "voice": "en_US-lessac-medium",
+      "models_dir": "models",
+      "use_cuda": false
+    },
+    "vad": {
+      "stop_secs": 0.5,
+      "start_secs": 0.2,
+      "confidence": 0.8,
+      "min_volume": 0.6
+    },
+    "camera": {
+      "device": 0,
+      "width": 1280,
+      "height": 720,
+      "max_edge": 896,
+      "jpeg_quality": 85,
+      "poll_fps": 4,
+      "idle_fps": 0.4,
+      "active_secs": 25,
+      "reuse_threshold": 0
+    },
+    "audio": {
+      "input_device": 30,
+      "output_device": 30,
+      "output_volume": 40,
+      "output_sample_rate": 48000,
+      "out_chunk_10ms": 4,
+      "sample_rate": 16000,
+      "channels": 1,
+      "suppress_echo": true,
+      "echo_tail_secs": 0.5
+    }
+  },
+  "stt": {
+    "load_ms": 959.3,
+    "latency_ms": {
+      "n": 8,
+      "min": 714.3,
+      "median": 742.0,
+      "mean": 744.3,
+      "p90": 773.3,
+      "max": 773.9,
+      "stdev": 19.8
+    },
+    "realtime_factor": 0.381,
+    "wer_mean": 0.0996,
+    "wer_median": 0.0,
+    "exact_match_rate": 0.625,
+    "examples": [
+      {
+        "said": "What is the capital of France?",
+        "heard": "What is the capital of France?",
+        "wer": 0.0,
+        "ms": 737.2
+      },
+      {
+        "said": "Can you hear me clearly?",
+        "heard": "Can you hear me clearly?",
+        "wer": 0.0,
+        "ms": 725.8
+      },
+      {
+        "said": "Tell me one interesting fact about the ocean.",
+        "heard": "Tell me one interesting fact about the ocean.",
+        "wer": 0.0,
+        "ms": 749.1
+      },
+      {
+        "said": "What time does the sun usually set in summer?",
+        "heard": "What time does the Sun usually set in summer?",
+        "wer": 0.0,
+        "ms": 746.8
+      },
+      {
+        "said": "Count from one to five for me.",
+        "heard": "count from 1 to 5 for me.",
+        "wer": 0.286,
+        "ms": 733.9
+      },
+      {
+        "said": "How would you describe the colour blue to someone?",
+        "heard": "How would you describe the color blue to someone?",
+        "wer": 0.111,
+        "ms": 773.3
+      },
+      {
+        "said": "Give me a short suggestion for dinner tonight.",
+        "heard": "Give me a short suggestion for dinner tonight.",
+        "wer": 0.0,
+        "ms": 773.9
+      },
+      {
+        "said": "What is two plus two?",
+        "heard": "What is 2 plus 2?",
+        "wer": 0.4,
+        "ms": 714.3
+      }
+    ]
+  },
+  "tts": {
+    "load_ms": 1492.0,
+    "synth_ms": {
+      "n": 3,
+      "min": 228.2,
+      "median": 256.8,
+      "mean": 257.2,
+      "p90": 286.7,
+      "max": 286.7,
+      "stdev": 23.9
+    },
+    "realtime_factor": 0.086,
+    "sample_text": "That's four. Is there anything else you would like to know?"
+  },
+  "llm_text": {
+    "mode": "text",
+    "ttft_ms": {
+      "n": 18,
+      "min": 158.0,
+      "median": 158.5,
+      "mean": 178.3,
+      "p90": 218.9,
+      "max": 233.6,
+      "stdev": 28.9
+    },
+    "total_ms": {
+      "n": 18,
+      "min": 957.2,
+      "median": 1585.7,
+      "mean": 1536.0,
+      "p90": 2146.1,
+      "max": 2318.8,
+      "stdev": 422.4
+    },
+    "tokens_per_s": 17.55,
+    "samples": [
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It\u2019s a beautiful city!",
+        "ttft_ms": 218.9,
+        "tokens": 14
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It\u2019s a beautiful city, isn\u2019t it?",
+        "ttft_ms": 158.4,
+        "tokens": 19
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is Paris. It's a beautiful city!",
+        "ttft_ms": 158.5,
+        "tokens": 14
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly! How can I help you today?",
+        "ttft_ms": 199.7,
+        "tokens": 15
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly. How can I help you today?",
+        "ttft_ms": 158.0,
+        "tokens": 15
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "Yes, I can hear you perfectly! How can I help you today?",
+        "ttft_ms": 158.4,
+        "tokens": 15
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "The ocean covers over 70% of our planet. Did you know that there\u2019s enough water in the ocean to cover all of Earth\u2019s landmasses twice over?",
+        "ttft_ms": 216.1,
+        "tokens": 37
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "The ocean covers over 70% of our planet. Did you know that there\u2019s enough water in the ocean to cover all of Earth\u2019s landmasses twice over?",
+        "ttft_ms": 158.5,
+        "tokens": 37
+      }
+    ]
+  },
+  "llm_vision": {
+    "mode": "vision",
+    "ttft_ms": {
+      "n": 4,
+      "min": 4991.9,
+      "median": 5053.7,
+      "mean": 5061.7,
+      "p90": 5147.6,
+      "max": 5147.6,
+      "stdev": 56.6
+    },
+    "total_ms": {
+      "n": 4,
+      "min": 6166.9,
+      "median": 6369.7,
+      "mean": 6480.1,
+      "p90": 7013.9,
+      "max": 7013.9,
+      "stdev": 320.9
+    },
+    "tokens_per_s": 17.35,
+    "samples": [
+      {
+        "prompt": "What do you see right now?",
+        "reply": "I see a modern living room with a kitchen and a large window. It looks like a cozy space for relaxing.",
+        "ttft_ms": 4991.9,
+        "tokens": 23
+      },
+      {
+        "prompt": "Describe this room briefly.",
+        "reply": "This appears to be a modern open-concept living room with a kitchen and a comfortable gray sofa. I see a large television and a round coffee table in the space.",
+        "ttft_ms": 5068.1,
+        "tokens": 34
+      },
+      {
+        "prompt": "What objects are on the table?",
+        "reply": "I see a coffee table, a book, and a box on the table. It looks like a modern living room.",
+        "ttft_ms": 5039.2,
+        "tokens": 24
+      },
+      {
+        "prompt": "What am I holding right now?",
+        "reply": "I'm sorry, I cannot tell you what you are holding from this image.",
+        "ttft_ms": 5147.6,
+        "tokens": 17
+      }
+    ]
+  },
+  "camera": {
+    "capture_ms": {
+      "n": 6,
+      "min": 11.7,
+      "median": 13.1,
+      "mean": 13.2,
+      "p90": 14.2,
+      "max": 14.2,
+      "stdev": 0.9
+    },
+    "frame_reuse": null,
+    "frame_age_ms": {
+      "n": 6,
+      "min": 187.1,
+      "median": 1444.0,
+      "mean": 1332.2,
+      "p90": 2031.2,
+      "max": 2085.7,
+      "stdev": 667.9
+    },
+    "jpeg_kb": {
+      "n": 6,
+      "min": 69.3,
+      "median": 69.3,
+      "mean": 69.4,
+      "p90": 69.5,
+      "max": 69.5,
+      "stdev": 0.1
+    },
+    "encoded_size": "896x503",
+    "capture_resolution": "1280x720",
+    "distinct_frames_for_vision_bench": 2
+  },
+  "vision_trigger": {
+    "cases": 17,
+    "correct": 17,
+    "accuracy": 1.0,
+    "sticky_followup_works": true,
+    "failures": []
+  },
+  "composed_ttfa": {
+    "voice_to_voice": {
+      "stt_ms": 742.0,
+      "llm_first_token_ms": 158.5,
+      "tts_first_audio_ms": 256.8,
+      "ttfa_ms": 1157.3
+    },
+    "voice_image_to_voice": {
+      "stt_ms": 742.0,
+      "llm_first_token_ms": 5053.7,
+      "tts_first_audio_ms": 256.8,
+      "camera_capture_ms": 13.1,
+      "ttfa_ms": 6065.6
+    }
+  }
+}

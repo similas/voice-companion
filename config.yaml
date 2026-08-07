@@ -91,10 +91,36 @@ camera:
   # that a vision turn gets a FRESH frame with ~0 ms capture latency. Without
   # draining, V4L2 hands you a buffered frame from whenever it last filled up.
   # Higher = fresher but more CPU. 5 fps at 720p is a few percent of one core.
-  # 2 fps, not 5: the decode runs on the CPU and competes with Whisper and the
-  # LLM. Vision turns are rare, and 2 fps still keeps the newest frame ~500 ms
-  # fresh, which is invisible in a spoken conversation.
-  poll_fps: 2
+  # TWO drain rates. MJPEG decode at 720p is CPU work that was competing
+  # with Whisper, Piper and Ollama on 6 cores during EVERY turn, including the
+  # ~80% that never look at the camera. Measured contention cost: live latency ran
+  # ~47% above the isolated benchmark.
+  #   poll_fps    while vision is in play (right after a vision turn)
+  #   idle_fps    the rest of the time
+  #   active_secs how long "in play" lasts after a vision turn
+  poll_fps: 4
+  idle_fps: 0.4
+  active_secs: 25
+
+  # FRAME REUSE — IMPLEMENTED, MEASURED, AND DISABLED. Kept for the record.
+  #
+  # The idea: llama.cpp caches prompt state, so resending a byte-identical image
+  # should skip the SigLIP vision encoder. An isolated probe looked spectacular —
+  # same image, SAME question: 6636 ms -> 2183 ms, a 14x win.
+  #
+  # It does not survive contact with a real conversation. The cache is keyed on the
+  # whole prompt PREFIX, not the image:
+  #     same image + same question      1846 ms   (hit)
+  #     same image + different question  6483 ms   (miss)
+  # Putting the image before the text in the message does not help either
+  # (6449 vs 6576 ms — noise), so the encoder re-runs whenever the wording changes.
+  # In conversation every question differs, so the win is ~0: measured 4249 ms
+  # fresh vs 4178 ms "reused" end to end.
+  #
+  # Left at 0 because reuse is not free of risk: serving a frame the scene has
+  # since moved past is exactly the stale-image bug fixed in v0.1, and it buys
+  # nothing. Set >0 only if you have a use case that repeats identical questions.
+  reuse_threshold: 0
 
 # ---------------------------------------------------------------------------
 # SPEECH TO TEXT
@@ -121,10 +147,49 @@ stt:
   no_speech_prob: 0.6
   min_chars: 8
 
+  # SPECULATIVE DECODING (v0.2) — decode during the VAD hangover, not after it.
+  #
+  # Turn detection waits stop_secs (0.5 s) of silence before ending the turn. That
+  # window is dead time by construction, and the speech is already complete when it
+  # starts. So Whisper runs THEN; if it finishes inside the hangover the transcript
+  # is ready the moment the turn is confirmed. If you resume talking, the guess is
+  # thrown away and the normal path runs.
+  #
+  # Not to be confused with classic streaming STT (partial windows committed on
+  # internal silence). That was implemented and measured SLOWER here — 714 ms ->
+  # 1074 ms with zero commits — because utterances to a voice assistant are 2-4 s of
+  # continuous speech with no internal pauses to commit at.
+  speculative: true
+
 # ---------------------------------------------------------------------------
 # BRAIN (vision + language)
 # ---------------------------------------------------------------------------
 llm:
+  # BACKEND — which server actually runs the model.
+  #
+  #   llama_server  llama.cpp's server, run directly (DEFAULT, v0.2)
+  #   ollama        Ollama's HTTP API
+  #
+  # Ollama is a WRAPPER around llama.cpp. It ships the same llama-server binary we
+  # use and proxies requests to it, and that hop costs ~1.1-1.6 s per request on
+  # this device — measured, and independent of model size and prompt length:
+  #
+  #     ollama         TTFT 1872 ms   15.1 tok/s
+  #     llama_server   TTFT  196 ms   17.4 tok/s    same GGUF, same weights
+  #
+  # Vision works on both (the gemma3 projector is inside the same GGUF; the
+  # launcher passes it as --mmproj). Start/stop the server with:
+  #     tools/llama_server.sh start|stop|status
+  #
+  # Switch back to `ollama` if you want model management, auto-unload, or you are
+  # running a model llama-server cannot load directly.
+  backend: llama_server
+  llama_server:
+    port: 8081
+    model_tag: gemma3:4b      # blob is resolved from Ollama's store, not re-downloaded
+    ctx_size: 2048
+    threads: 4
+
   # A DERIVED model, not plain gemma3:4b. Created with:
   #
   #   printf 'FROM gemma3:4b\nPARAMETER num_ctx 2048\nPARAMETER num_gpu 99\n' > Modelfile
@@ -149,6 +214,11 @@ llm:
   # after the first sentence, and a long reply just means the bot talks over your
   # next question. 60 tokens is roughly 2 spoken sentences.
   max_tokens: 60
+  # Conversation turns retained (user+assistant pairs). The system message is
+  # always kept. Uncapped history was a real bug: prefill grew every turn and once
+  # the total passed num_ctx the model silently lost the start of the conversation.
+  # 8 turns is plenty for spoken context and keeps prefill flat.
+  max_history_turns: 8
   # Kept deliberately terse. Every word here is prefill on EVERY turn, and prefill
   # is pure added time-to-first-token.
   system_prompt: >
@@ -165,6 +235,16 @@ tts:
   # CPU-only, so this must stay false. Piper on CPU already runs at ~0.09x
   # realtime here, so there is nothing to gain.
   use_cuda: false
+
+  # CLAUSE STREAMING (v0.2) — start speaking on the first clause, not the first
+  # full sentence. Pipecat's default waits for . ! ? so a reply like
+  # "The capital of France is Paris, and it has about two million people."
+  # stays silent for all 68 characters. Measured: mean first chunk 50 -> 30 chars,
+  # about 293 ms earlier audio at 17.6 tok/s. Only the FIRST chunk is cut short —
+  # once audio is playing, later chunks use full sentences, which sound better.
+  clause_streaming: true
+  min_clause_chars: 18      # do not cut before this much text exists
+  first_chunk_chars: 46     # first chunk only: break at a word boundary near here
 
 # ---------------------------------------------------------------------------
 # VOICE ACTIVITY / TURN DETECTION

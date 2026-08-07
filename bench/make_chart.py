@@ -67,7 +67,7 @@ def bar(x0, y, w, h, fill, rx=2):
             f'height="{h}" fill="{fill}" rx="{rx}"/>')
 
 
-def build(bench, live_text, live_vision):
+def build(bench, live_text, live_vision, tag="v0.1"):
     comp = bench["composed_ttfa"]
     rows = []
     v2v = comp.get("voice_to_voice")
@@ -93,7 +93,7 @@ def build(bench, live_text, live_vision):
          f'viewBox="0 0 {W} {H}" font-family="system-ui,-apple-system,'
          f'Segoe UI,Roboto,sans-serif">', STYLE]
     o.append(f'<text x="0" y="24" font-size="17" class="ttl" fill="{TEXT}">'
-             f'Time to first audio &#8212; v0.1</text>')
+             f'Time to first audio &#8212; {tag}</text>')
     o.append(f'<text x="0" y="46" font-size="12.5" class="sub" fill="{INK}">'
              f'Jetson Orin Nano Super 8GB &#183; fully local &#183; '
              f'bars = component benchmark, diamond = median of a real conversation'
@@ -165,7 +165,7 @@ def main():
     bench = json.loads((d / "benchmark.json").read_text())
     lt, lv = live_medians(d / "live-session-2026-08-05" / "live_turns.csv")
 
-    svg = build(bench, lt, lv)
+    svg = build(bench, lt, lv, args.tag)
     out = d / "ttfa.svg"
     out.write_text(svg)
     print(f"  wrote {out.relative_to(ROOT)}")

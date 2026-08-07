@@ -190,7 +190,7 @@ def system_info(cfg):
         "models": {
             "stt": f"faster-whisper {cfg.get('stt.model')} "
                    f"({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})",
-            "llm": cfg.get("llm.model"),
+            "llm": f"{cfg.get('llm.model')} via {(cfg.get('llm.backend') or 'ollama')}",
             "tts": f"piper {cfg.get('tts.voice')}",
             "vad": "silero (onnxruntime)",
         },
@@ -287,54 +287,92 @@ def bench_stt(cfg, prompts, reps):
     }
 
 
-def ollama_stream(base_url, model, messages, max_tokens, images=None):
-    """One streamed chat completion. Returns (ttft_ms, total_ms, text, n_tok)."""
-    url = base_url.rstrip("/").removesuffix("/v1") + "/api/chat"
+def resolve_backend(cfg):
+    """Endpoint + model name for whichever backend config.yaml selects."""
+    backend = (cfg.get("llm.backend") or "ollama").strip()
+    if backend == "llama_server":
+        port = cfg.get("llm.llama_server.port", 8081)
+        return backend, f"http://127.0.0.1:{port}/v1", "gemma3"
+    return backend, cfg.get("llm.base_url",
+                            "http://localhost:11434/v1"), cfg.get("llm.model")
+
+
+def llm_stream(base_url, model, messages, max_tokens, images=None):
+    """
+    One streamed chat completion over the OpenAI-compatible API.
+
+    Deliberately uses /v1/chat/completions for BOTH backends so the comparison is
+    apples to apples — the earlier version called Ollama's native /api/chat, which
+    is a different code path with different overhead.
+
+    Returns (ttft_ms, total_ms, text, n_tok). n_tok is counted from the stream
+    because llama-server does not report eval_count the way Ollama does.
+    """
     msgs = [dict(m) for m in messages]
     if images:
-        msgs[-1]["images"] = images
+        # OpenAI-shaped multimodal content: text part + image part.
+        last = msgs[-1]
+        last["content"] = [{"type": "text", "text": last.get("content", "")}] + [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/jpeg;base64,{im}"}}
+            for im in images]
     body = json.dumps({"model": model, "messages": msgs, "stream": True,
-                       "keep_alive": "60m",
-                       "options": {"num_predict": max_tokens}}).encode()
-    req = urllib.request.Request(url, data=body,
+                       "max_tokens": max_tokens}).encode()
+    req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions",
+                                data=body,
                                 headers={"Content-Type": "application/json"})
     t0 = time.perf_counter()
     ttft = None
     chunks = []
-    n = 0
     with urllib.request.urlopen(req, timeout=300) as r:
         for raw in r:
-            if not raw.strip():
+            s = raw.decode().strip()
+            if not s.startswith("data:") or s == "data: [DONE]":
                 continue
-            d = json.loads(raw)
-            tok = (d.get("message") or {}).get("content", "")
-            if tok and ttft is None:
-                ttft = (time.perf_counter() - t0) * 1000
+            try:
+                d = json.loads(s[5:])
+            except Exception:
+                continue
+            tok = (d.get("choices") or [{}])[0].get("delta", {}).get("content")
             if tok:
+                if ttft is None:
+                    ttft = (time.perf_counter() - t0) * 1000
                 chunks.append(tok)
-            if d.get("done"):
-                n = d.get("eval_count", 0)
-                break
-    return ttft, (time.perf_counter() - t0) * 1000, "".join(chunks).strip(), n
+    return ttft, (time.perf_counter() - t0) * 1000, "".join(chunks).strip(), len(chunks)
 
 
-def bench_llm(cfg, prompts, reps, image_b64=None, label="text"):
-    base = cfg.get("llm.base_url")
-    model = cfg.get("llm.model")
+def bench_llm(cfg, prompts, reps, image_b64=None, label="text",
+              images_pool=None):
+    """
+    Measure TTFT / throughput.
+
+    images_pool: for vision runs, a list of DISTINCT frames. Each call takes a
+    different one, because repeating the same (prompt, image) pair hits
+    llama.cpp's exact-prefix cache and produces a time real conversation never
+    sees. Measured proof: same image with 5 different questions ran 4900-5250 ms
+    every time, while a repeated identical pair returned in ~300 ms. Reporting the
+    latter as "vision latency" would be simply false.
+    """
+    _, base, model = resolve_backend(cfg)
     sysmsg = {"role": "system", "content": cfg.get("llm.system_prompt", "").strip()}
     max_tok = cfg.get("llm.max_tokens", 60)
 
     # warm-up so the first measured call is not paying a model load
-    ollama_stream(base, model, [sysmsg, {"role": "user", "content": "hi"}], 4,
+    llm_stream(base, model, [sysmsg, {"role": "user", "content": "hi"}], 4,
                   images=[image_b64] if image_b64 else None)
 
     ttfts, totals, rates, outs = [], [], [], []
+    call_i = 0
     for text in prompts:
         for _ in range(reps):
             msgs = [sysmsg, {"role": "user", "content": text}]
-            ttft, total, reply, n = ollama_stream(
-                base, model, msgs, max_tok,
-                images=[image_b64] if image_b64 else None)
+            if images_pool:
+                img = images_pool[call_i % len(images_pool)]
+            else:
+                img = image_b64
+            call_i += 1
+            ttft, total, reply, n = llm_stream(
+                base, model, msgs, max_tok, images=[img] if img else None)
             if ttft is None:
                 continue
             ttfts.append(ttft)
@@ -353,14 +391,98 @@ def bench_llm(cfg, prompts, reps, image_b64=None, label="text"):
     }
 
 
+def bench_stt_speculative(cfg, prompts, stt_bench):
+    """
+    Latency the user actually waits for STT, when speculative decoding is on.
+
+    The raw decode time (bench_stt) is not what a person experiences. Turn detection
+    holds `stop_secs` of silence before ending the turn, and with speculation the
+    decode runs inside that window — so the wait after the turn ends is only whatever
+    is left. Measured here by replaying the same audio in 20 ms frames, firing the
+    VAD hangover hook, then timing from turn-end to transcript.
+    """
+    if not cfg.get("stt.speculative", True):
+        return None
+    import asyncio
+    import numpy as np
+    from pipecat.frames.frames import (StartFrame, TranscriptionFrame,
+                                       UserStartedSpeakingFrame,
+                                       UserStoppedSpeakingFrame)
+    from pipecat.processors.frame_processor import FrameDirection
+    from app.stt_stream import SpeculativeWhisperSTTService
+
+    sr = cfg.get("audio.sample_rate", 16000)
+    stop_secs = cfg.get("vad.stop_secs", 0.5)
+
+    def as_pcm16(path):
+        with wave.open(str(path), "rb") as wf:
+            a = np.frombuffer(wf.readframes(wf.getnframes()),
+                              dtype=np.int16).astype(np.float32) / 32768.0
+            wsr = wf.getframerate()
+        if wsr != sr:
+            idx = (np.arange(int(len(a) * sr / wsr)) * wsr / sr).astype(int)
+            a = a[np.clip(idx, 0, len(a) - 1)]
+        return (a * 32768).astype(np.int16)
+
+    async def run():
+        got = {}
+
+        async def capture(frame, direction=None):
+            if isinstance(frame, TranscriptionFrame):
+                got["t"] = time.perf_counter()
+                got["text"] = frame.text
+
+        svc = SpeculativeWhisperSTTService(
+            model=cfg.get("stt.model", "tiny"), device=cfg.get("stt.device", "cpu"),
+            compute_type=cfg.get("stt.compute_type", "int8"), sample_rate=sr)
+        svc.push_frame = capture
+        await svc.start(StartFrame(audio_in_sample_rate=sr, audio_out_sample_rate=sr))
+
+        waits, texts = [], []
+        step = int(0.02 * sr)
+        for n, item in enumerate(prompts):
+            pcm = as_pcm16(item["path"])
+            got.clear()
+            await svc.process_frame(UserStartedSpeakingFrame(),
+                                    FrameDirection.DOWNSTREAM)
+            for i in range(0, len(pcm), step):
+                async for _ in svc.run_stt(pcm[i:i+step].tobytes()):
+                    pass
+                await asyncio.sleep(0.02)
+            svc.on_maybe_stopped()             # VAD enters the hangover
+            await asyncio.sleep(stop_secs)
+            t0 = time.perf_counter()
+            await svc.process_frame(UserStoppedSpeakingFrame(),
+                                    FrameDirection.DOWNSTREAM)
+            if "t" in got and n > 0:           # skip the first, it warms caches
+                waits.append((got["t"] - t0) * 1000)
+                texts.append({"said": item["text"], "heard": got.get("text", "")})
+        return waits, texts, svc.spec_hits, svc.spec_misses
+
+    waits, texts, hits, misses = asyncio.run(run())
+    if not waits:
+        return None
+    raw = (stt_bench or {}).get("latency_ms", {}).get("median")
+    return {
+        "wait_after_turn_end_ms": stats(waits),
+        "raw_decode_median_ms": raw,
+        "saved_ms": round(raw - st.median(waits), 1) if raw else None,
+        "speculation_hits": hits, "speculation_misses": misses,
+        "wer_mean": round(st.fmean(wer(t["said"], t["heard"]) for t in texts), 4),
+        "examples": texts[:4],
+    }
+
+
 def bench_camera(cfg, reps):
     from app.vision import Camera
     cam = Camera(cfg.get("camera.device"), cfg.get("camera.width"),
-                 cfg.get("camera.height"), cfg.get("camera.poll_fps"))
+                 cfg.get("camera.height"), cfg.get("camera.poll_fps"),
+                 cfg.get("camera.idle_fps", 0.4),
+                 cfg.get("camera.active_secs", 25))
     if not cam.start():
         return None, None
     time.sleep(1.5)
-    grabs, ages, sizes = [], [], []
+    grabs, ages, sizes, pool = [], [], [], []
     jpeg_b64 = None
     dims = None
     for _ in range(reps):
@@ -374,16 +496,34 @@ def bench_camera(cfg, reps):
         ages.append(age * 1000)
         sizes.append(len(jpeg) / 1024)
         jpeg_b64 = base64.b64encode(jpeg).decode()
+        pool.append(jpeg_b64)
         dims = f"{w}x{h}"
-        time.sleep(0.3)
+        time.sleep(0.6)
+    reuse_thresh = cfg.get("camera.reuse_threshold", 0.0)
+    reuse_stats = None
+    if reuse_thresh > 0:
+        # Does the reuse path actually fire on a static scene, and does it return
+        # byte-identical bytes (which is what lets llama.cpp skip the encoder)?
+        cam.reuse_hits = 0
+        first = cam.grab_jpeg(cfg.get("camera.max_edge"),
+                              cfg.get("camera.jpeg_quality"), reuse_thresh)
+        again = [cam.grab_jpeg(cfg.get("camera.max_edge"),
+                              cfg.get("camera.jpeg_quality"), reuse_thresh)
+                 for _ in range(4)]
+        identical = sum(1 for g in again if g and first and g[0] is first[0])
+        reuse_stats = {"threshold": reuse_thresh, "probes": len(again),
+                       "byte_identical": identical,
+                       "hits": cam.reuse_hits}
     cam.stop()
     return {
         "capture_ms": stats(grabs),
+        "frame_reuse": reuse_stats,
         "frame_age_ms": stats(ages),
         "jpeg_kb": stats(sizes),
         "encoded_size": dims,
         "capture_resolution": f"{cfg.get('camera.width')}x{cfg.get('camera.height')}",
-    }, jpeg_b64
+        "distinct_frames_for_vision_bench": len(set(pool)),
+    }, jpeg_b64, pool
 
 
 def bench_trigger(cfg):
@@ -456,25 +596,44 @@ def main():
       f"RTF {stt['realtime_factor']:.3f}x   "
       f"WER {stt['wer_mean']*100:.1f}%   exact {stt['exact_match_rate']*100:.0f}%")
 
-    p("\n[5/7] LLM text-only (gemma3 via ollama)")
+    stt_spec = None
+    if cfg.get("stt.speculative", True):
+        p("\n[4b/7] STT with speculative decoding (what you actually wait for)")
+        stt_spec = bench_stt_speculative(cfg, prompts, stt)
+        if stt_spec:
+            p(f"      wait after turn end median "
+              f"{stt_spec['wait_after_turn_end_ms']['median']:.0f} ms   "
+              f"(raw decode {stt_spec['raw_decode_median_ms']:.0f} ms, "
+              f"saved {stt_spec['saved_ms']:.0f} ms)   "
+              f"hits={stt_spec['speculation_hits']} "
+              f"misses={stt_spec['speculation_misses']}   "
+              f"WER {stt_spec['wer_mean']*100:.1f}%")
+
+    p("\n[5/7] LLM text-only (gemma3 via llama-server)")
     llm_text = bench_llm(cfg, VOICE_PROMPTS[:6], args.reps, label="text")
     p(f"      TTFT median {llm_text['ttft_ms']['median']:.0f} ms   "
       f"{llm_text['tokens_per_s']} tok/s")
 
     camera = llm_vision = None
     jpeg_b64 = None
+    frame_pool = []
     if not args.no_vision:
         p("\n[6/7] camera + LLM vision")
-        camera, jpeg_b64 = bench_camera(cfg, max(3, args.reps))
+        camera, jpeg_b64, frame_pool = bench_camera(cfg, max(6, args.reps * 2))
         if camera:
             p(f"      capture median {camera['capture_ms']['median']:.0f} ms   "
               f"age {camera['frame_age_ms']['median']:.0f} ms   "
               f"{camera['encoded_size']}  {camera['jpeg_kb']['median']:.0f} KB")
         if jpeg_b64:
-            llm_vision = bench_llm(cfg, VISION_PROMPTS, max(2, args.reps - 1),
-                                   image_b64=jpeg_b64, label="vision")
+            llm_vision = bench_llm(cfg, VISION_PROMPTS, 1,
+                                   label="vision", images_pool=frame_pool)
             p(f"      VLM TTFT median {llm_vision['ttft_ms']['median']:.0f} ms   "
               f"{llm_vision['tokens_per_s']} tok/s")
+            # NOTE: no "cached frame" variant is reported. Repeating an
+            # identical (prompt, image) pair returns in ~300 ms, but that is an
+            # exact-prefix cache hit, not vision latency — with the same image and
+            # five DIFFERENT questions the cost is 4900-5250 ms every time. See
+            # camera.reuse_threshold in config.yaml.
     else:
         p("\n[6/7] vision skipped (--no-vision)")
 
@@ -483,8 +642,15 @@ def main():
     p(f"      {trig['correct']}/{trig['cases']} correct "
       f"({trig['accuracy']*100:.0f}%)   sticky={trig['sticky_followup_works']}")
 
-    voice_ttfa = compose_ttfa(stt, llm_text, tts)
-    vision_ttfa = compose_ttfa(stt, llm_vision, tts, camera) if llm_vision else None
+    stt_for_ttfa = stt
+    if stt_spec:
+        # Substitute the wait a person actually experiences for the raw decode time.
+        stt_for_ttfa = dict(stt)
+        stt_for_ttfa["latency_ms"] = stt_spec["wait_after_turn_end_ms"]
+    voice_ttfa = compose_ttfa(stt_for_ttfa, llm_text, tts)
+    vision_ttfa = (compose_ttfa(stt_for_ttfa, llm_vision, tts, camera)
+                   if llm_vision else None)
+    vision_cached_ttfa = None
 
     results = {
         "tag": args.tag,
@@ -497,10 +663,13 @@ def main():
             "camera": cfg.get("camera"),
             "audio": {k: v for k, v in (cfg.get("audio") or {}).items()},
         },
-        "stt": stt, "tts": tts, "llm_text": llm_text,
-        "llm_vision": llm_vision, "camera": camera, "vision_trigger": trig,
-        "composed_ttfa": {"voice_to_voice": voice_ttfa,
-                          "voice_image_to_voice": vision_ttfa},
+        "stt": stt, "stt_speculative": stt_spec, "tts": tts, "llm_text": llm_text,
+        "llm_vision": llm_vision,
+        "camera": camera, "vision_trigger": trig,
+        "composed_ttfa": {
+            "voice_to_voice": voice_ttfa,
+            "voice_image_to_voice": vision_ttfa,
+        },
     }
 
     out = outdir / "benchmark.json"

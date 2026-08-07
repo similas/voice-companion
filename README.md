@@ -11,7 +11,7 @@ mic ──▶ VAD ──▶ STT ──▶ [camera, only when asked] ──▶ VL
 
 ---
 
-## Time to first audio — v0.1
+## Time to first audio — v0.2
 
 ### ▶ [Open the interactive dashboard](https://similas.github.io/voice-companion/)
 
@@ -21,34 +21,86 @@ said and what came back. The image below is a static fallback — GitHub sanitiz
 READMEs, so the interactive version has to live on Pages.
 
 <a href="https://similas.github.io/voice-companion/">
-  <img src="bench/results/v0.1/ttfa.svg" alt="TTFA breakdown for v0.1" width="100%">
+  <img src="bench/results/v0.2/ttfa.svg" alt="TTFA breakdown for v0.2" width="100%">
 </a>
 
-| path | benchmark (components) | live conversation (median) |
-|---|---|---|
-| **voice → voice** | **2.86 s** | **4.20 s** |
-| **voice + image → voice** | **5.25 s** | **9.30 s** |
+| stage | v0.1 | *step 1* | **v0.2** |
+|---|---|---|---|
+| STT wait after you stop | 739 ms | 742 ms | **218 ms** |
+| LLM first token | 1855 ms | 158 ms | **158 ms** |
+| TTS first audio | 268 ms | 257 ms | **253 ms** |
+| **voice → voice TTFA** | **2862 ms** | **1157 ms** | **613 ms** |
 
-Two numbers because they answer different questions. The **benchmark** figure runs each
-stage in isolation — the floor this hardware can do. The **live** figure is the median of a
-real 16-turn conversation, where Whisper, Piper, the camera thread and Ollama all compete
-for 6 CPU cores. The gap between them *is* the contention cost, and it is the main thing
-v0.2 should attack.
+**4.7× faster than v0.1**, from two changes. The middle column is an intermediate
+measurement (`bench/results/v0.2-step1-llama-server/`) taken after the first change and
+before the second — it was never released, but the numbers are kept because they show
+which change bought which milliseconds.
+
+**1. llama-server instead of Ollama** — 1855 → 158 ms.
+Ollama is a wrapper around llama.cpp: it ships the same `llama-server` binary and proxies
+to it. That hop cost ~1.1-1.7 s per request here, independent of model size (1B and 4B
+within 30 ms of each other) and of prompt length (13 words to 1354 words varied by 50 ms).
+Same GGUF, same weights — only the request path changed.
+
+**2. Speculative STT** — 736 → 218 ms, **at zero accuracy cost**.
+Turn detection holds `stop_secs` (0.5 s) of silence before ending your turn, so a thinking
+pause does not cut you off. That window is dead time by construction, and your speech is
+already finished when it starts — so Whisper runs *then*:
+
+```
+last sound ─▶ VAD STOPPING ─▶ [decode here] ─▶ turn confirmed ─▶ transcript ready
+```
+
+It is the same computation on the same audio, moved earlier — not an approximation.
+Verified over 8 prompts: transcripts **byte-identical 8/8**, WER 9.96% → 9.96%,
+9 speculation hits and 0 misses. If you resume talking the guess is discarded.
+
+**What did NOT work, measured rather than assumed:** classic streaming STT — decode partial
+windows during speech, commit segments closed off by internal silence — came out **slower:
+714 ms → 1074 ms with zero commits.** Utterances to a voice assistant are 2-4 s of
+continuous speech with no internal pauses to commit at. Right idea for dictation, wrong
+workload here.
+
+**3. Clause-level TTS.** Pipecat waits for `. ! ?` before synthesising, so
+"The capital of France is Paris, and it has about two million people." stayed silent for
+all 68 characters. Breaking on the first clause (and on a word boundary near 46 chars when
+there is no punctuation) cut the mean first chunk 50 → 30 chars, ~293 ms earlier audio.
+Only the first chunk is cut short; later ones use full sentences, which sound better.
+
+Vision is deliberately untouched in v0.2 at ~5.6 s — that cost is Gemma 3's SigLIP
+encoder, and the focus was the voice path.
+
+\* **The vision figures are not comparable across versions.** v0.1's 5.25 s was measured
+with a flawed method: the benchmark repeated each (prompt, image) pair, and repeats hit
+llama.cpp's exact-prefix cache, which returns in ~300 ms and is not vision latency. v0.2
+uses a distinct frame per call. Measured honestly with distinct frames and distinct
+questions, llama-server is still ~1.4 s faster than Ollama on vision
+(~5.05 s vs ~6.45 s VLM TTFT) — the same overhead removal, just swamped by the encoder.
+
+The dashboard also shows a **live** column: medians from a real 16-turn conversation, where
+STT, TTS, the camera thread and the model all compete for 6 CPU cores. **Those numbers are
+from v0.1 and have not been re-measured** — a live re-run needs a person talking, not a
+benchmark. Treat the benchmark figures as the hardware floor and the live ones as the
+v0.1-era ceiling; the truth for v0.2 sits between and is not yet recorded.
 
 Stage medians, measured:
 
 | stage | text turn | vision turn |
 |---|---|---|
-| STT (whisper tiny, int8) | 739 ms | 739 ms |
+| STT wait (whisper tiny, int8, speculative) | 218 ms | 218 ms |
 | camera capture + JPEG | — | 13 ms |
-| **LLM first token** | **1855 ms** | **4233 ms** |
-| TTS first audio (piper) | 268 ms | 268 ms |
-| generation rate | 16.0 tok/s | 16.3 tok/s |
+| **LLM first token** | **158 ms** | **5176 ms** |
+| TTS first audio (piper) | 253 ms | 253 ms |
+| generation rate | 17.5 tok/s | 17.3 tok/s |
 
-The LLM dominates: 65% of a text turn, 81% of a vision turn. Attaching an image costs
-**+2.4 s of prefill** — Gemma 3's vision encoder plus 256 image tokens. Capturing the frame
-is free (13 ms); sending a smaller image does not help, because Gemma 3 resizes to a fixed
-896×896 internally.
+A text turn is now well balanced — 36% STT, 26% LLM, 41% TTS — with no single dominant
+cost left. Raw Whisper decode is still 752 ms; speculation hides 550 ms of it inside the
+VAD hangover.
+
+Vision is dominated entirely by Gemma 3's SigLIP encoder — **~4.5 s** of it, measured by
+comparing a fresh frame against a cache hit. The 268 image tokens it produces add only
+~330 ms of prefill. Capturing the frame is free (13 ms), and sending a smaller image does
+not help because Gemma 3 resizes to a fixed 896×896 internally.
 
 ---
 
@@ -57,10 +109,11 @@ is free (13 ms); sending a smaller image does not help, because Gemma 3 resizes 
 | role | choice | notes |
 |---|---|---|
 | Orchestration | **Pipecat 0.0.108** | pinned — 1.x needs `onnxruntime~=1.24.3`, which has no aarch64 wheel |
-| STT | **faster-whisper `tiny`**, int8, CPU | CTranslate2 backend; `base` was 1369 ms vs 739 ms for the same text |
-| Brain (text + vision) | **Gemma 3 4B** via **Ollama**, Q4_K_M | one model for both; 100% GPU-offloaded |
+| Inference server | **llama.cpp `llama-server`**, run directly | 91% lower TTFT than Ollama; `tools/llama_server.sh` |
+| STT | **faster-whisper `tiny`**, int8, CPU | CTranslate2 backend, decoded speculatively during the VAD hangover |
+| Brain (text + vision) | **Gemma 3 4B**, Q4_K_M | one model for both; 100% GPU-offloaded. GGUF reused from Ollama's store |
 | TTS | **Piper**, `en_US-lessac-medium` | 0.09× realtime, CPU |
-| VAD / turn-taking | **Silero VAD** (onnxruntime) | 0.5 s of silence ends your turn |
+| VAD / turn-taking | **Silero VAD** (onnxruntime) | 0.5 s of silence ends your turn; `STOPPING` triggers speculative STT |
 | Audio I/O | **PortAudio** → **PipeWire** → A2DP | PortAudio cannot see Bluetooth sinks directly |
 | Vision capture | **OpenCV** + **V4L2**, MJPEG | frame kept fresh by a background drain thread |
 
@@ -82,7 +135,7 @@ saves roughly 2 GB on an 8 GB budget.
 
 | link | protocol |
 |---|---|
-| LLM | HTTP + SSE streaming to Ollama (`/api/chat`, OpenAI-compatible `/v1` via Pipecat) |
+| LLM | HTTP + SSE streaming, OpenAI-compatible `/v1/chat/completions` (llama-server, or Ollama) |
 | Images | base64 JPEG data URI inside the chat message |
 | Audio out | PortAudio → PipeWire → **Bluetooth A2DP/SBC** |
 | Audio in | V4L2/ALSA → PipeWire → PortAudio, 16 kHz mono PCM |
@@ -92,6 +145,12 @@ saves roughly 2 GB on an 8 GB budget.
 ---
 
 ## Memory, and the trap
+
+This section describes the **Ollama** backend, which is still selectable via
+`llm.backend: ollama`. With `llama_server` (the default) you pass `--n-gpu-layers 99`
+explicitly, so there is no estimator to second-guess — but the underlying memory constraint
+is identical, and `llama-server` has its own silent-CPU-fallback trap documented in
+`tools/llama_server.sh`.
 
 Unified memory means **system RAM is GPU RAM**. If too little is free when Ollama loads the
 model, it silently offloads **zero layers to the GPU** and runs on CPU — same answers, several
@@ -121,7 +180,7 @@ Check it with `ollama ps` — you want `100% GPU`. `tools/check_env.py` verifies
 
 ## Vision only when asked
 
-An image costs +2.4 s, so the camera is used only when your words imply it. Two mechanisms:
+An image costs **~4.5 s**, so the camera is used only when your words imply it. Two mechanisms:
 a configurable phrase list, plus a generic test (a question about your body, clothing,
 surroundings, or a held object) and **sticky follow-ups** — after a vision turn, "how about
 now?" looks again instead of guessing.
@@ -137,14 +196,19 @@ with no new capture taken.
 
 ## Quality metrics
 
-| metric | v0.1 |
-|---|---|
-| STT word error rate | 11.3% mean, 5.6% median |
-| STT exact-match rate | 50% (4 of 8 prompts verbatim) |
-| Vision trigger accuracy | 17/17 (100%) |
-| LLM throughput | 16.0 tok/s text, 16.3 tok/s vision |
-| Camera frame freshness | 254 ms median |
-| Encoded frame sent to the VLM | 896×503, 66 KB |
+| metric | v0.1 | v0.2 |
+|---|---|---|
+| STT word error rate | 11.3% mean | **9.96% mean** (identical with speculation) |
+| STT exact-match rate | 50% | **62%** (5 of 8 verbatim) |
+| Vision trigger accuracy | 17/17 | **17/17** (100%) |
+| LLM throughput | 16.0 tok/s | **17.6 tok/s** |
+| Camera frame freshness | 254 ms | 1444 ms† |
+| Encoded frame sent to the VLM | 896×503, 66 KB | 896×503, 69 KB |
+
+† Frame age rose on purpose. v0.2 drains the camera at 0.4 fps when idle instead of 2 fps,
+because that MJPEG decode was competing with Whisper and the model for 6 cores on every
+turn — including the ~80% that never look at the camera. It jumps back to 4 fps for 25 s
+after any vision turn, so follow-ups still get a fresh frame.
 
 WER is measured against Piper-synthesised prompts, not human speech — a reproducible proxy,
 not a claim about anyone's accent. Errors are dominated by numeral formatting ("2" vs "two")
@@ -157,10 +221,13 @@ in `benchmark.json` under `stt.examples` if you want to judge for yourself.
 
 ```
 app/
-  main.py       pipeline assembly, EchoGate, NoiseGate, VisionGate
-  stt.py        Whisper with hallucination suppression
+  main.py       pipeline assembly, EchoGate, NoiseGate, VisionGate, ImageMerger
+  stt_stream.py speculative Whisper — decodes during the VAD hangover
+  vad_hook.py   Silero wrapper that reports the STOPPING edge
+  tts_stream.py clause-level aggregation so speech starts on the first clause
+  stt.py        non-speculative Whisper with hallucination suppression (fallback)
   vision.py     camera drain thread + "should I look?" classifier
-  metrics.py    per-turn latency records, CSV, SpeakingState
+  metrics.py    per-turn latency records, CSV, FIFO turn attribution
   observer.py   passive Pipecat observer that timestamps every stage
   config.py     config loading
 config.yaml     every model, device and threshold, with measurements in comments
@@ -169,6 +236,7 @@ bench/
   make_chart.py renders the TTFA chart from results
   results/v0.1/ benchmark.json, ttfa.svg, and the live session it is compared against
 tools/
+  llama_server.sh  start/stop the llama.cpp server (refuses a silent CPU-only start)
   check_env.py  environment doctor; --list-audio for PyAudio indices
   selftest.py   exercises everything except the microphone
   bt_speaker.sh pair/connect a Bluetooth speaker

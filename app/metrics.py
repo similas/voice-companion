@@ -32,6 +32,7 @@ interrupted              true if you barged in over the reply
 
 import csv
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -204,6 +205,15 @@ class MetricsLogger:
         self.console = console
         self.turn_count = 0
         self.current: Optional[Turn] = None
+        # Turns whose reply has not arrived yet, oldest first.
+        #
+        # Without this, replies were attributed to the WRONG question. Observed in a
+        # real conversation: a vision turn logged 2587 ms (impossible — the encoder
+        # alone is 4.5 s) carrying a reply that belonged to the previous question,
+        # while the actual vision answer appeared on the next row. If you speak
+        # again while a reply is still streaming, "current" has already moved on and
+        # every later stamp lands on the new turn.
+        self._awaiting: deque = deque()
 
         # Header written up front and flushed on every row, so a run that is
         # killed with ctrl-c still leaves a complete, readable file.
@@ -246,7 +256,9 @@ class MetricsLogger:
         return self.current
 
     def finish_turn(self):
-        t = self.current
+        # Finalise the turn whose reply just finished — the head of the queue —
+        # rather than whatever happens to be "current".
+        t = self._target()
         if t is None or t.written:
             return
         # A turn with nothing but a start is noise (e.g. a cough that tripped
@@ -259,10 +271,15 @@ class MetricsLogger:
         self._fh.flush()
         if self.console:
             print(t.summary(), flush=True)
-        self.current = None
+        while self._awaiting and self._awaiting[0].written:
+            self._awaiting.popleft()
+        if self.current is t:
+            self.current = None
 
     def close(self):
-        self.finish_turn()
+        # Flush every turn still queued, so ctrl-c never loses data.
+        for _ in range(len(self._awaiting) + 1):
+            self.finish_turn()
         try:
             self._fh.close()
         except Exception:
@@ -272,8 +289,14 @@ class MetricsLogger:
     # Each of these is a no-op if there is no active turn, which keeps callers
     # free of None-checks. Stamps are first-write-wins where a stage can fire
     # repeatedly (first token, first audio chunk).
+    def _target(self) -> Optional["Turn"]:
+        """The turn a reply belongs to: the oldest one still awaiting one."""
+        while self._awaiting and self._awaiting[0].written:
+            self._awaiting.popleft()
+        return self._awaiting[0] if self._awaiting else self.current
+
     def _stamp(self, attr: str, once: bool = True):
-        t = self.current
+        t = self._target()
         if t is None:
             return
         if once and getattr(t, attr) is not None:
@@ -281,28 +304,33 @@ class MetricsLogger:
         setattr(t, attr, time.perf_counter())
 
     def stt_done(self, text: str):
-        # A transcript is what proves the utterance was real, so this is where a
-        # turn actually begins. If one is already open (the user said two things
-        # before the bot replied), flush it first rather than losing it.
+        # A transcript proves the utterance was real, so this is where a turn
+        # begins. If a previous turn is still waiting for its reply we do NOT
+        # finalise it here — its stamps are still to come. It goes on the queue and
+        # is written when its own reply completes.
         if self.current is not None and self.current.transcript:
-            self.finish_turn()
+            self._awaiting.append(self.current)
+            self.current = None
         if self.current is None:
             self.start_turn()
         t = self.current
         t.stt_done = time.perf_counter()
         t.transcript = text
+        self._awaiting.append(t)
 
     def vision_done(self):
         self._stamp("vision_done")
-        if self.current:
-            self.current.vision_used = True
+        t = self._target()
+        if t:
+            t.vision_used = True
 
     def llm_first_token(self):
         self._stamp("llm_first_token")
 
     def llm_text(self, text: str):
-        if self.current:
-            self.current.reply_parts.append(text)
+        t = self._target()
+        if t:
+            t.reply_parts.append(text)
 
     def llm_done(self):
         self._stamp("llm_done", once=False)
@@ -314,5 +342,6 @@ class MetricsLogger:
         self._stamp("playback_start")
 
     def interrupted(self):
-        if self.current:
-            self.current.interrupted = True
+        t = self._target()
+        if t:
+            t.interrupted = True
