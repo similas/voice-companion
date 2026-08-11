@@ -15,3 +15,15 @@ __pycache__/
 
 # benchmark scratch
 /tmp/
+
+# Model weights. The GGUF is 3.3 GB — far past GitHub's 100 MB per-file limit, and
+# it is a verbatim copy of a published artefact, so it is fetched rather than
+# vendored. See README for the download command.
+/models/
+# per-utterance recordings of the room — never commit
+logs/turns/
+# vendor firmware binaries — download URL in hardware/respeaker/README
+hardware/respeaker/*.bin
+# single-instance lock + pid — runtime state, never commit
+logs/.agent.lock
+logs/.agent.pid

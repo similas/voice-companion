@@ -31,22 +31,36 @@ audio:
   # rather than an index hunt — which is what you want for the reSpeaker XVF3800.
   # If you prefer to pin the webcam mic explicitly, set input_device: 0 (also
   # verified working, even while PipeWire holds the device).
-  input_device: 30          # "pulse" -> PipeWire default source (C960 mic)
-  output_device: 30         # "pulse" -> PipeWire default sink (ALbose speaker)
+  # NAMES, not indices. PortAudio index numbers are NOT stable: plugging in one
+  # USB speaker renumbered every device on this machine and moved "pulse" from 30
+  # to 31, which silently pointed this config at "pipewire" instead. A name is
+  # matched case-insensitively (exact first, then substring) at startup.
+  # An integer still works if you want to pin one, and null means system default.
+  #
+  # "pulse" routes through PipeWire to whatever the current default source/sink is,
+  # so swapping the mic or speaker is a PipeWire default change, not a config edit.
+  input_device: pulse       # -> PipeWire default source
+  output_device: pulse      # -> PipeWire default sink
 
   # Forced at startup so a speaker that remembers 100% from a previous session
   # cannot blast you. Raise/lower to taste.
-  output_volume: 40
+  output_volume: 70
 
-  # Output runs at the Bluetooth sink's native 48 kHz. At 16 kHz, PipeWire had to
-  # resample again on top of Piper's own conversion, and the result crackled over
-  # A2DP. Set this to 48000 for Bluetooth; 16000 is fine for a wired card.
+  # Output at the sink's native rate to avoid a second resample. Both the ALbose
+  # (A2DP) and the Jieli USB speaker run at 48 kHz, so this suits either.
   output_sample_rate: 48000
 
-  # Playback chunk size in units of 10 ms. Bluetooth jitters far more than a local
-  # sound card and underruns on 10 ms chunks, which is heard as crackling.
-  # 4 = 40 ms buffers. Raise to 6-8 if it still crackles, lower for less latency.
-  out_chunk_10ms: 4
+  # Playback chunk size in units of 10 ms.
+  #
+  # 4 (40 ms) was needed for BLUETOOTH: A2DP jitters badly and underran on 10 ms
+  # chunks, which is heard as crackling. A WIRED USB speaker does not — measured
+  # on the Jieli UAC device, reported output latency scales cleanly and playback
+  # stays realtime-paced with no deep buffer absorbing audio:
+  #     40 ms chunks -> 80.0 ms output latency
+  #     20 ms chunks -> 40.0 ms
+  #     10 ms chunks -> 20.0 ms
+  # So 1 on USB, 4 on Bluetooth. Raise it if you hear crackling.
+  out_chunk_10ms: 1
   # 16 kHz is what both Whisper and Silero VAD want. Piper outputs 22050 Hz and
   # pipecat resamples it to this rate for playback.
   sample_rate: 16000
@@ -67,12 +81,14 @@ audio:
   # README) if you need true barge-in.
   suppress_echo: true
   # Keep the mic closed for this long AFTER the bot's playback is reported done.
-  # It must cover Bluetooth's output latency: Pipecat reports "stopped speaking"
-  # when it finishes writing to the device, but A2DP buffers mean the speaker is
-  # still making sound for a few hundred ms afterwards. At 0.4-0.6 s the tail of
-  # the bot's own reply still leaked in and was transcribed as a user turn.
-  # 1.2 s is comfortable for Bluetooth; drop to ~0.4 for a wired speaker.
-  echo_tail_secs: 0.5
+  #
+  # This existed to cover BLUETOOTH's deep output buffer: Pipecat reports "stopped
+  # speaking" when it finishes WRITING to the device, and over A2DP the speaker was
+  # still making sound seconds later — measured, the bot's own words came back 6.3 s
+  # and 8.75 s "after it stopped". SpeakingState already tracks the real audio
+  # duration to absorb that, and a wired USB speaker has almost no such lag.
+  # 0.3 s on USB, 0.5-1.2 s on Bluetooth.
+  echo_tail_secs: 0.3
 
 # ---------------------------------------------------------------------------
 # CAMERA
@@ -145,7 +161,27 @@ stt:
   # whatever slips past. Lower no_speech_prob (0.4) if it ignores real speech;
   # raise it (0.8) if it still talks to itself.
   no_speech_prob: 0.6
-  min_chars: 8
+  # 4, not 8. "joke." is five characters and was discarded as too short — a real
+  # request, silently dropped. Short utterances ("yes", "stop", "louder") are
+  # legitimate; whisper's own no_speech_prob is what actually catches hallucination,
+  # and the hallucinations seen here ("Jetson Ornum") were longer than 8 anyway, so
+  # this filter was costing real speech and catching nothing.
+  min_chars: 4
+
+  # 3 = all of the agent's cores (3-5, set in run.sh). Whisper and Piper barely
+  # overlap inside a turn — STT finishes before TTS starts — so whisper can use the
+  # whole partition. 2 was tried first and cost ~500 ms per decode for nothing.
+  cpu_threads: 3
+
+  # RECORD WHAT WHISPER HEARS. Writes one WAV per utterance — the exact, already
+  # VAD-segmented audio handed to the model, not a separate capture. Play them back
+  # to settle "is this a microphone problem or an STT problem", which are different
+  # bugs with opposite fixes. Also exposes clipped starts and utterances split at a
+  # pause, because the file boundaries ARE the turn boundaries.
+  # Costs ~32 KB per second of speech — and it is a recording of your room, so it
+  # ships OFF. It quietly archived 158 utterances before anyone thought to check.
+  save_audio: false
+  save_audio_dir: logs/turns
 
   # SPECULATIVE DECODING (v0.2) — decode during the VAD hangover, not after it.
   #
@@ -186,7 +222,18 @@ llm:
   backend: llama_server
   llama_server:
     port: 8081
-    model_tag: gemma3:4b      # blob is resolved from Ollama's store, not re-downloaded
+    # Explicit GGUF. Google's official QAT (quantization-aware trained) q4_0 build
+    # of Gemma 4 E2B — QAT means the 4-bit weights were trained as 4-bit rather
+    # than rounded afterwards, so quality at this size should beat our previous
+    # post-training Q4_K_M.
+    #
+    # NOTE on size: this file is 3.35 GB, essentially the same as gemma3:4b's
+    # 3.34 GB. "E2B" means EFFECTIVE 2B via per-layer embeddings, not half the
+    # weights on disk. The memory win here comes from num_key_value_heads=1
+    # (a much smaller KV cache) and from dropping the vision projector, not from
+    # the weights.
+    model_path: models/gemma-4-E2B-q4_0.gguf
+    model_tag: gemma3:4b      # fallback if model_path is unset
     ctx_size: 2048
     threads: 4
 
@@ -259,7 +306,13 @@ vad:
   # reference point (t_user_stopped_speaking = 0), so it does not appear in
   # total_latency — but you feel every millisecond of it. Raise it if it clips
   # the ends of your sentences.
-  stop_secs: 0.5
+  # 0.8, not 0.5. Half a second is shorter than the pauses people leave INSIDE a
+  # sentence, so 0.5 chopped single utterances into two turns: one 5.5 s sentence
+  # became turn 7 at 18:23:44.693 and turn 8 at 18:23:47.133. The reply went to the
+  # first fragment and the second was left with nothing to answer — which is what
+  # the blank "bot:" lines in the log were. Costs ~300 ms of hangover, most of which
+  # speculative STT decodes into anyway.
+  stop_secs: 0.8
   start_secs: 0.2           # how much speech before we believe it's speech
   # RAISED from Silero's usual 0.7/0.6. Measured ambient noise here is only 0.018
   # peak, so the room is quiet — but an omnidirectional webcam mic also picks up a
@@ -271,7 +324,12 @@ vad:
   # longer wins. If it still answers the TV, raise confidence toward 0.95. The
   # real fix is a directional mic — the reSpeaker XVF3800's beamforming is exactly
   # the right tool, or add a wake word.
-  confidence: 0.8           # Silero speech probability threshold
+  # 0.6, not 0.8. The EMEET is a far-field webcam mic: audio played next to it
+  # cleared 0.8 easily, but a person speaking across the room did not trigger a turn
+  # at all — the agent looked deaf while the pipeline was demonstrably alive.
+  # Silero scored a clean speech sample at median 0.95 and ambient room at max 0.40,
+  # so 0.6 sits in the gap with margin on both sides.
+  confidence: 0.6           # Silero speech probability threshold
   min_volume: 0.6
 
 # ---------------------------------------------------------------------------
@@ -281,7 +339,14 @@ vad:
 # an image every turn roughly triples time-to-first-token, so it must be opt-in.
 # Matching is case-insensitive substring on the transcript.
 vision:
-  enabled: true
+  # OFF while the focus is the voice path. This is not just scope — it is memory.
+  # On 7.4 GB shared RAM, llama-server holds the model permanently (Ollama used to
+  # unload when idle; llama-server never does), and with VS Code Server's 17
+  # processes taking 1.3 GB the agent was OOM-killed mid-session:
+  #     Out of memory: Killed process 35421 (python)
+  # Disabling vision drops the camera thread, its 720p MJPEG decode and the OpenCV
+  # buffers. Set true again when you want the camera back.
+  enabled: false
   triggers:
     - what do you see
     - what can you see
@@ -316,6 +381,32 @@ vision:
 metrics:
   csv_dir: logs             # one timestamped CSV per run
   console: true             # per-turn summary printed to stdout
+
+# ---------------------------------------------------------------------------
+# RUNTIME
+# ---------------------------------------------------------------------------
+runtime:
+  # Refuse to start below this much free memory. The agent has been OOM-killed
+  # mid-conversation on this box; a loud failure at startup beats a silent death
+  # later. tools/llama_server.sh keeps a larger reserve of its own so that the
+  # server never squeezes the agent out.
+  min_free_mb: 700
+
+  # How willingly this process offers itself to the OOM killer (-1000..1000).
+  # Higher = killed sooner. 900 is deliberately high: if the system runs out of
+  # memory, we want the kernel to take THIS process, never the sshd carrying your
+  # login session. During the 2026-08-08 incident the session sshd scored 666 with
+  # an adj of 0, which made it a legitimate target — and losing the shell means
+  # losing the ability to diagnose anything. llama-server uses 1000 and dies first.
+  # Set to 0 to opt out (not recommended over SSH).
+  oom_score_adj: 900
+
+  # Pipecat cancels the whole pipeline after idle_timeout_secs of no speech, and
+  # defaults that to ON at 300 s. For an always-on companion that is wrong: it sat
+  # quietly for five minutes and then killed itself, leaving a process that looked
+  # running but had exited. Being idle is the normal state, not a fault.
+  cancel_on_idle: false
+  idle_timeout_secs: 300      # only controls when the (now harmless) event fires
 
 # ---------------------------------------------------------------------------
 # INTERRUPTION (barge-in)

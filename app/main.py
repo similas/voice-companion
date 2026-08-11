@@ -53,6 +53,128 @@ from app.vad_hook import HookedSileroVAD
 from app.vision import Camera, VisionTrigger
 
 
+def volunteer_as_oom_victim(adj: int = 900) -> None:
+    """
+    Make THIS process a preferred kill target, so the kernel never picks sshd.
+
+    If memory does run out system-wide, the kernel kills whatever it judges worst,
+    scored by oom_score_adj. Measured on this box during a real incident:
+
+        sshd (listener)   adj -1000   score   0     protected
+        sshd (session)    adj     0   score 666     <- what actually died
+        this agent        adj     0
+
+    With everything at 0 the login session was a legitimate candidate, and losing it
+    means losing the ability to even diagnose the problem. Raising our own score to
+    900 makes us far more attractive than any sshd, so we die first and you keep the
+    shell. llama-server sets 1000 and goes before us, because it is bigger and
+    cheaper to restart.
+
+    Raising oom_score_adj needs no privileges; only LOWERING it does. So this works
+    as an ordinary user, whereas protecting sshd itself requires root.
+    """
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write(str(adj))
+        logger.info(f"oom: this process volunteers first (oom_score_adj={adj})")
+    except Exception as e:                        # not fatal — it is a safety net
+        logger.warning(f"oom: could not set oom_score_adj ({e}); "
+                       "a system-wide OOM could pick your SSH session instead")
+
+    # NO CORE DUMPS. This is what turned a crash into a machine-wide freeze.
+    # /proc/sys/kernel/core_pattern on this box pipes cores to apport, so when a
+    # process dies the kernel streams its entire address space into a Python
+    # helper. For a multi-gigabyte process on a 7.6 GB box that is fatal, and the
+    # kernel log caught it happening:
+    #
+    #     do_coredump -> elf_core_dump -> __alloc_pages -> allocation failure
+    #
+    # i.e. the machine ran out of memory WHILE trying to record why it ran out of
+    # memory. A crash we can restart from is fine; a crash that takes the host
+    # down with it is not.
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except Exception as e:
+        logger.warning(f"oom: could not disable core dumps ({e})")
+
+
+def check_memory(min_free_mb: int) -> bool:
+    """
+    Refuse to start without enough headroom, rather than becoming the OOM victim.
+
+    On unified memory there is no graceful degradation: when the pool runs out the
+    kernel picks a process and kills it. It picked this one, mid-conversation, with
+    no message in our log — the user spoke to a process that no longer existed.
+    Failing loudly at startup is strictly better than dying silently later.
+    """
+    mem = {}
+    try:
+        for ln in open("/proc/meminfo"):
+            k, _, v = ln.partition(":")
+            mem[k] = int(v.split()[0]) // 1024
+    except Exception:
+        return True
+    avail = mem.get("MemAvailable", 0)
+    if avail >= min_free_mb:
+        logger.info(f"memory: {avail} MB available")
+        return True
+    logger.error(f"memory: only {avail} MB available, need {min_free_mb} MB")
+    logger.error("  the kernel OOM killer has taken this process before; refusing "
+                 "to start rather than die mid-conversation")
+    logger.error("  free some: docker ps / ollama ps / "
+                 "tools/llama_server.sh stop")
+    return False
+
+
+def resolve_audio_device(spec, want_output: bool) -> Optional[int]:
+    """
+    Turn a config value into a PortAudio device index.
+
+    Accepts an int (used as-is), None (system default), or a STRING matched against
+    device names — which is what you want, because PortAudio indices are not stable.
+    Plugging in one USB speaker renumbered everything on this machine: "pulse" moved
+    from index 30 to 31, silently pointing the config at "pipewire" instead. Names
+    survive that; indices do not.
+    """
+    if spec is None or isinstance(spec, int):
+        return spec
+    name = str(spec).strip().lower()
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    saved = os.dup(2)
+    os.dup2(devnull, 2)
+    try:
+        import pyaudio
+        pa = pyaudio.PyAudio()
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(devnull)
+    try:
+        exact, partial = None, None
+        for i in range(pa.get_device_count()):
+            d = pa.get_device_info_by_index(i)
+            chans = d["maxOutputChannels"] if want_output else d["maxInputChannels"]
+            if chans < 1:
+                continue
+            dn = str(d["name"]).lower()
+            if dn == name:
+                exact = i
+                break
+            if partial is None and name in dn:
+                partial = i
+        idx = exact if exact is not None else partial
+        if idx is None:
+            logger.warning(f"audio: no {'output' if want_output else 'input'} "
+                           f"device matching {spec!r}; using the system default")
+            return None
+        logger.info(f"audio: {'out' if want_output else 'in'} {spec!r} -> index "
+                    f"{idx} ({pa.get_device_info_by_index(idx)['name']})")
+        return idx
+    finally:
+        pa.terminate()
+
+
 def resolve_llm(cfg):
     """
     Pick the LLM endpoint and model name for the configured backend.
@@ -234,6 +356,13 @@ class EchoGate(FrameProcessor):
         # emitted by the output transport and only travels downstream.
         self._eg_state = state
         self._eg_dropped = 0
+        # A turn-start that arrived while the gate was closed. Dropping it outright
+        # loses the ENTIRE utterance (STT only buffers between Started and Stopped,
+        # and VAD will not re-fire until the user goes silent and starts over) —
+        # measured as a ~3 s "it will not hear me" dead zone after every reply. So
+        # remember it and inject it the moment the gate reopens; the STT pre-roll
+        # ring covers the audio missed in between.
+        self._eg_pending_start = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -245,6 +374,13 @@ class EchoGate(FrameProcessor):
             # Drop the mic audio itself, and the VAD turn markers derived from it,
             # so STT is never fed the bot's voice and no phantom turn is opened.
             self._eg_dropped += 1
+            if isinstance(frame, UserStartedSpeakingFrame):
+                # This is the worst case for the user: they started talking while
+                # the gate was closed, the turn-start marker dies here, and the
+                # WHOLE utterance is lost — STT only buffers between Started and
+                # Stopped. Log it loudly; if this fires often the gate is too slow.
+                logger.warning("gate: swallowed a turn START — user began speaking "
+                               "while the gate was still closed")
             return  # swallow — do not push downstream
 
         await self.push_frame(frame, direction)
@@ -510,6 +646,12 @@ async def build_and_run(cfg) -> int:
         logger.error("    ~/.venvs/voice-companion/bin/pip install pyaudio")
         return 2
 
+    # Before allocating anything substantial, make ourselves the preferred victim.
+    volunteer_as_oom_victim(cfg.get("runtime.oom_score_adj", 900))
+
+    if not check_memory(cfg.get("runtime.min_free_mb", 700)):
+        return 4
+
     metrics = MetricsLogger(cfg.path("metrics.csv_dir", "logs"),
                             console=cfg.get("metrics.console", True))
     logger.info(f"latency CSV: {metrics.path}")
@@ -575,8 +717,10 @@ async def build_and_run(cfg) -> int:
         # on. vad_analyzer here still works (it warns about moving to
         # LLMUserAggregator/VADProcessor, which is a 1.x-era API).
         vad_analyzer=vad,
-        input_device_index=cfg.get("audio.input_device"),
-        output_device_index=cfg.get("audio.output_device"),
+        input_device_index=resolve_audio_device(cfg.get("audio.input_device"),
+                                                False),
+        output_device_index=resolve_audio_device(cfg.get("audio.output_device"),
+                                                 True),
     )
     set_output_volume(cfg.get("audio.output_volume", 55))
     with quiet_stderr():   # PortAudio's ALSA probe noise, see quiet_stderr()
@@ -592,7 +736,12 @@ async def build_and_run(cfg) -> int:
             language=cfg.get("stt.language", "en"),
             no_speech_prob=cfg.get("stt.no_speech_prob", 0.6),
             min_chars=cfg.get("stt.min_chars", 8),
+            cpu_threads=cfg.get("stt.cpu_threads", 2),
             sample_rate=sample_rate,
+            # Dump the exact audio whisper sees, so "it misheard me" can be pinned
+            # on the microphone or on the model instead of argued about.
+            save_dir=(cfg.path("stt.save_audio_dir", "logs/turns")
+                      if cfg.get("stt.save_audio", False) else None),
         )
         if isinstance(vad, HookedSileroVAD):
             vad.set_callbacks(on_maybe_stopped=stt.on_maybe_stopped,
@@ -609,18 +758,33 @@ async def build_and_run(cfg) -> int:
         )
 
     # ---- LLM ---------------------------------------------------------------
-    # temperature and max_tokens go through the OpenAI-compatible API, which
-    # Ollama honours. num_ctx does NOT — it is a server-side setting; see the
+    # temperature and max_tokens go through the OpenAI-compatible API, which both
+    # backends honour. num_ctx does NOT — it is a server-side setting; see the
     # README section "Context length" for how to change it (it affects whether
     # the model fits on the GPU, so it is worth knowing about).
+    #
+    # USE THE RESOLVED VALUES. This previously read cfg("llm.base_url") and
+    # cfg("llm.model") directly, which meant resolve_llm() above was computed,
+    # logged, and then thrown away — the process announced
+    #
+    #     llm backend: llama_server -> http://127.0.0.1:8081/v1
+    #
+    # while actually building a client for Ollama on :11434. Every single user turn
+    # therefore hit Ollama, which had no model resident, so Ollama loaded a full
+    # second copy of gemma3 plus its 942 MB vision projector to serve it. On 7.6 GB
+    # of shared memory that froze the machine hard enough to need a power cycle —
+    # four times — and the request never returned, so the agent also never replied.
+    # The log looked healthy throughout because our llama-server WAS up and warm;
+    # nothing was ever sending it traffic except the warm-up ping.
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
-            model=cfg.get("llm.model", "gemma3:4b"),
+            model=llm_model,
             temperature=cfg.get("llm.temperature", 0.7),
             max_tokens=cfg.get("llm.max_tokens", 150),
         ),
-        base_url=cfg.get("llm.base_url", "http://localhost:11434/v1"),
+        base_url=llm_url,
     )
+    logger.info(f"llm client -> {llm_url} (model {llm_model})")
     context = OpenAILLMContext(messages=[
         {"role": "system", "content": cfg.get("llm.system_prompt", "").strip()},
     ])
@@ -670,6 +834,13 @@ async def build_and_run(cfg) -> int:
 
     task = PipelineTask(
         pipeline,
+        # NEVER self-terminate. Pipecat defaults to cancel_on_idle_timeout=True
+        # with idle_timeout_secs=300, so after five minutes of silence the whole
+        # pipeline cancelled itself and the process exited — you would walk up to
+        # a companion that had quietly died. An always-on assistant is idle almost
+        # all of the time by definition; that is not a fault condition.
+        idle_timeout_secs=cfg.get("runtime.idle_timeout_secs", 300),
+        cancel_on_idle_timeout=cfg.get("runtime.cancel_on_idle", False),
         params=PipelineParams(
             allow_interruptions=cfg.get("interruption.enabled", True),
             enable_metrics=True,
@@ -708,10 +879,18 @@ async def build_and_run(cfg) -> int:
 
 
 def banner(cfg, metrics):
+    # Report the backend we ACTUALLY resolved, not a hardcoded guess. This line
+    # read "<llm.model> via Ollama" unconditionally, so it announced a stale model
+    # name and the wrong engine while every request went to llama-server.
+    _backend, _base, _ = resolve_llm(cfg)
+    if _backend == "llama_server":
+        _brain = f"{Path(cfg.get('llm.llama_server.model_path', '')).stem} via llama-server"
+    else:
+        _brain = f"{cfg.get('llm.model')} via Ollama"
     print(f"""
   ┌─ local voice + vision companion ──────────────────────────────
   │  STT     faster-whisper {cfg.get('stt.model')} ({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})
-  │  brain   {cfg.get('llm.model')} via Ollama
+  │  brain   {_brain}
   │  TTS     Piper {cfg.get('tts.voice')}
   │  vision  {'on — camera used only when you ask' if cfg.get('vision.enabled') else 'off'}
   │  barge-in {'enabled' if cfg.get('interruption.enabled') else 'disabled'}

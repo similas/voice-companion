@@ -91,6 +91,10 @@ class SpeakingState:
         # have finished playing. The max() is what absorbs Bluetooth's buffering.
         audio_ends = self._play_start + self._audio_secs
         self.quiet_until = max(now, audio_ends) + self.tail
+        from loguru import logger
+        logger.debug(f"gate: stopped(); booked {self._audio_secs:.2f}s audio, "
+                     f"audio_ends {audio_ends-now:+.2f}s from now, "
+                     f"mic reopens in {self.quiet_until-now:.2f}s")
 
     def muted(self) -> bool:
         return self.speaking or time.monotonic() < self.quiet_until

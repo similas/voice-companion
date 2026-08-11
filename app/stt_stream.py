@@ -36,6 +36,9 @@ computation, moved earlier — not an approximation.
 import asyncio
 import threading
 import time
+import wave
+from collections import deque
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -62,7 +65,8 @@ class SpeculativeWhisperSTTService(STTService):
     def __init__(self, *, model: str = "tiny", device: str = "cpu",
                  compute_type: str = "int8", language: str = "en",
                  no_speech_prob: float = 0.6, min_chars: int = 8,
-                 speculative: bool = True, sample_rate: int = 16000, **kwargs):
+                 speculative: bool = True, sample_rate: int = 16000,
+                 save_dir=None, cpu_threads: int = 2, **kwargs):
         # Declare every settings field explicitly. STTService logs an ERROR for any
         # field left NOT_GIVEN, and an error-level line about our own service being
         # misconfigured is noise that hides real problems.
@@ -75,11 +79,36 @@ class SpeculativeWhisperSTTService(STTService):
         self._no_speech_prob = no_speech_prob
         self._min_chars = min_chars
         self._speculative = speculative
+        # Sized to the agent's core partition (3 cores, set in run.sh). Whisper
+        # and Piper barely overlap inside a turn, so whisper gets the whole
+        # partition; 2 threads was measured ~500 ms slower per decode.
+        self._cpu_threads = cpu_threads
+        # Where to dump the audio whisper actually sees (None = off).
+        self._save_dir = Path(save_dir) if save_dir else None
+        self._utt = 0
 
         self._model = None
         self._lock = threading.Lock()
         self._audio = np.zeros(0, dtype=np.float32)
         self._speaking = False
+
+        # PRE-ROLL RING BUFFER — fixes two bugs at once, both observed live:
+        #
+        # 1. UNBOUNDED GROWTH. run_stt used to append every chunk to _audio forever,
+        #    resetting only when a turn STARTED. During silence that is a leak
+        #    (~225 MB/hour at 16 kHz float32) and an O(n^2) re-copy every 20 ms; the
+        #    agent was found at 2.3 GB RSS after an evening idle. Idle audio now
+        #    lands here, bounded.
+        #
+        # 2. FIRST-WORD CLIPPING. VAD needs start_secs (0.2 s) of speech before it
+        #    opens the turn, and everything before that moment was discarded — so
+        #    "Can you hear me?" was transcribed as 'You hear me?' and "Tell me a
+        #    joke" as 'me a joke.' (both in logs/turns/*.wav, where the first word
+        #    is simply absent from the file). Seeding the utterance from this ring
+        #    recovers the audio that convinced the detector to open.
+        self._preroll: deque = deque()
+        self._preroll_samples = 0
+        self._preroll_max = int(0.6 * sample_rate)
 
         # Speculation state
         self._spec_task: Optional[asyncio.Task] = None
@@ -97,7 +126,7 @@ class SpeculativeWhisperSTTService(STTService):
             t0 = time.perf_counter()
             self._model = await asyncio.to_thread(
                 WhisperModel, self._model_name, device=self._device,
-                compute_type=self._compute_type)
+                compute_type=self._compute_type, cpu_threads=self._cpu_threads)
             logger.info(
                 f"stt: faster-whisper {self._model_name} ({self._compute_type}) "
                 f"loaded in {time.perf_counter()-t0:.1f}s"
@@ -175,7 +204,12 @@ class SpeculativeWhisperSTTService(STTService):
 
         if isinstance(frame, UserStartedSpeakingFrame):
             with self._lock:
-                self._audio = np.zeros(0, dtype=np.float32)
+                # Start the utterance with the pre-roll, not with nothing: the
+                # audio VAD spent deciding "this is speech" is part of the speech.
+                if self._preroll:
+                    self._audio = np.concatenate(list(self._preroll))
+                else:
+                    self._audio = np.zeros(0, dtype=np.float32)
             self._cancel_speculation()
             self._speaking = True
 
@@ -193,11 +227,51 @@ class SpeculativeWhisperSTTService(STTService):
             elif text:
                 logger.info(f"stt: discarded too-short {text!r}")
 
+    def _save_utterance(self, audio: np.ndarray) -> Optional[str]:
+        """
+        Write the EXACT audio whisper is about to see, so a bad transcript can be
+        blamed on the right component.
+
+        "It misheard me" has two very different causes — the microphone captured
+        something unintelligible, or it captured fine and the model got it wrong —
+        and they lead to opposite fixes (hardware/gain vs a bigger model). Listening
+        to this file settles it in seconds. It is the audio AFTER VAD segmentation,
+        so it also reveals clipped starts and utterances split at a pause.
+        """
+        if self._save_dir is None or len(audio) < self._sample_rate * 0.1:
+            return None
+        try:
+            self._save_dir.mkdir(parents=True, exist_ok=True)
+            self._utt += 1
+            path = self._save_dir / f"{self._utt:03d}_{time.strftime('%H%M%S')}.wav"
+            pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(self._sample_rate)
+                w.writeframes(pcm.tobytes())
+            return str(path)
+        except Exception as e:                       # never break a turn over this
+            logger.warning(f"stt: could not save utterance audio: {e}")
+            return None
+
     async def _finalise(self) -> str:
         """Use the speculation if it covered the whole utterance, else decode."""
         with self._lock:
             audio = self._audio.copy()
             self._audio = np.zeros(0, dtype=np.float32)
+
+        wav_path = self._save_utterance(audio)
+        secs = len(audio) / self._sample_rate
+        rms = float(np.sqrt(np.mean(audio ** 2))) if len(audio) else 0.0
+
+        def done(text: str) -> str:
+            if wav_path:
+                # Level is logged next to the text so "quiet mic" is visible without
+                # opening the file: ~0.001 is near-silence, ~0.05+ is healthy speech.
+                logger.info(f"stt: saved {wav_path} ({secs:.1f}s, rms {rms:.4f}) "
+                            f"-> {text.strip()!r}")
+            return text
 
         task, spec_samples = self._spec_task, self._spec_samples
         self._spec_task = None
@@ -218,7 +292,7 @@ class SpeculativeWhisperSTTService(STTService):
                 if self._spec_text is not None:
                     self.spec_hits += 1
                     text, self._spec_text = self._spec_text, None
-                    return text
+                    return done(text)
             else:
                 # Too much audio arrived after the guess: it is stale.
                 task.cancel()
@@ -226,12 +300,12 @@ class SpeculativeWhisperSTTService(STTService):
 
         self._spec_text = None
         if len(audio) / self._sample_rate < 0.08:
-            return ""
+            return done("")
         try:
-            return await asyncio.to_thread(self._decode, audio)
+            return done(await asyncio.to_thread(self._decode, audio))
         except Exception as e:
             logger.warning(f"stt: decode failed: {e}")
-            return ""
+            return done("")
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         """Accumulate audio. Transcripts are pushed on UserStoppedSpeaking."""
@@ -240,6 +314,15 @@ class SpeculativeWhisperSTTService(STTService):
             return
         chunk = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
         with self._lock:
-            self._audio = np.concatenate([self._audio, chunk])
+            if self._speaking:
+                # In-turn: grow the utterance. Utterances are seconds long, so the
+                # concatenate here is fine — it was the idle path that was not.
+                self._audio = np.concatenate([self._audio, chunk])
+            else:
+                # Idle: keep only the last ~0.6 s, waiting to become a pre-roll.
+                self._preroll.append(chunk)
+                self._preroll_samples += len(chunk)
+                while self._preroll_samples > self._preroll_max and self._preroll:
+                    self._preroll_samples -= len(self._preroll.popleft())
         return
         yield  # pragma: no cover — keeps this an async generator

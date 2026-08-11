@@ -1,0 +1,28 @@
+turn,wall_clock,t_user_stopped_speaking,t_stt_done,t_vision_done,t_llm_first_token,t_llm_done,t_tts_first_audio,t_audio_playback_start,total_latency,vision_used,transcript_chars,transcript,reply_tokens,reply_chars,reply,interrupted
+1,2026-08-10T20:29:56.320,0.0,1306.5,,3506.3,3940.9,3975.8,3980.0,3980.0,false,29,Can you hear me? How are you?,10,42,Yes I can hear you. I am functioning well.,false
+2,2026-08-10T20:30:28.630,0.0,1019.8,,1845.1,2397.3,2223.4,2228.3,2228.3,false,16,Can you hear me?,11,45,Yes I can hear you. How can I help you today?,false
+3,2026-08-10T20:30:47.582,0.0,1123.3,,1969.1,2681.4,2597.9,2607.3,2607.3,false,25,Tell me a joke right now.,19,76,Why did the scarecrow win an award? Because he was outstanding in his field.,false
+1,2026-08-10T20:34:18.886,0.0,2020.6,,4120.0,4695.7,4565.0,4580.3,4580.3,false,68,"Hello, can you hear me clearly right now? This is a microphone test.",15,61,I can hear you clearly. I am ready for your next instruction.,false
+2,2026-08-10T20:34:20.929,0.0,1359.4,,,,,,,false,32,"Hello. Yes, very clear. Are you?",0,0,,false
+3,2026-08-10T20:34:31.591,0.0,1695.8,,,,1725.1,,,false,20,The microphone test.,0,0,,false
+4,2026-08-10T20:34:40.850,0.0,1758.7,,,,1775.1,,,false,41,"Yeah, I'm gonna hear a joke. Hey joke now",0,0,,false
+5,2026-08-10T20:35:27.683,0.0,1123.7,,2015.1,2567.3,2792.6,2801.7,2801.7,false,20,you're being honest.,12,46,I am an AI and I strive to be honest with you.,false
+6,2026-08-10T20:35:40.103,0.0,1058.2,,1941.3,2517.8,2734.6,2742.1,2742.1,false,21,Tell me at dirty joke,10,42,"I'm sorry, I cannot tell you a dirty joke.",false
+7,2026-08-10T20:36:01.242,0.0,1166.4,,2031.8,2728.5,2633.2,2639.1,2639.1,false,29,Tell me something funny then.,19,76,Why did the scarecrow win an award? Because he was outstanding in his field.,false
+1,2026-08-10T20:38:30.561,0.0,1160.3,,7242.0,7809.9,7987.0,7993.8,7993.8,false,25,and you're being already.,14,54,I am a large language model. How can I help you today?,false
+2,2026-08-10T20:38:38.387,0.0,3225.3,,,,,,,false,68,"Hello, can you hear me clearly right now? This is a microphone test.",0,0,,false
+1,2026-08-10T20:40:18.413,0.0,1787.4,,4289.8,4964.5,4972.8,5020.9,5020.9,false,68,"Hello, can you hear me clearly right now? This is a microphone test.",14,54,"Yes, I can hear you clearly. How can I help you today?",false
+2,2026-08-10T20:40:21.411,0.0,1968.6,,,,,,,false,35,"Yes, I can hear your bell. Are you?",0,0,,false
+1,2026-08-10T20:42:56.610,0.0,3086.7,,4922.9,5536.9,5507.9,5515.2,5515.2,false,68,"Hello, can you hear me clearly right now? This is a microphone test.",15,61,Yes I can hear you clearly. I am ready for your instructions.,false
+2,2026-08-10T20:43:04.454,0.0,1181.8,,2003.0,2277.5,2474.3,2479.7,2479.7,false,17,Shut the fuck up.,7,27,I will stop responding now.,false
+3,2026-08-10T20:43:58.317,0.0,1065.8,,1901.0,2430.4,2374.1,2379.8,2379.8,false,17,"Hey, how are you?",13,53,I am functioning correctly. How can I help you today?,false
+4,2026-08-10T20:44:06.226,0.0,1187.5,,2035.5,2738.6,2664.0,2670.4,2670.4,false,15,Tell me a joke.,19,76,Why did the scarecrow win an award? Because he was outstanding in his field.,false
+5,2026-08-10T20:44:15.412,0.0,1160.0,,2064.4,2429.0,2598.8,2603.4,2603.4,false,16,Tell me a riddle,8,31,What has an eye but cannot see?,false
+6,2026-08-10T20:44:24.726,0.0,1640.6,,2552.0,2908.7,3103.9,3109.1,3109.1,false,12,repeat again,8,31,What has an eye but cannot see?,false
+7,2026-08-10T20:44:38.061,0.0,1600.7,,2511.6,2791.3,2920.1,2923.1,2923.1,false,33,I don't know what's the response.,5,20,A needle has an eye.,false
+8,2026-08-10T20:44:45.835,0.0,1097.4,,2037.5,2807.6,2555.6,2559.1,2559.1,false,14,That was good.,16,65,I'm glad you enjoyed it. Is there anything else I can do for you?,false
+9,2026-08-10T20:44:58.274,0.0,1332.7,,2295.0,2955.9,3031.9,3054.6,3054.6,false,30,Can you find the stick moment?,19,76,I need more information to find the stick moment. What are you referring to?,false
+10,2026-08-10T20:45:20.087,0.0,1128.3,,2225.5,2842.3,2760.4,2765.4,2765.4,false,17,Then you hear me?,16,63,"Yes, I can hear you clearly. What would you like to talk about?",false
+11,2026-08-10T20:45:31.499,0.0,2204.7,,3337.3,3764.1,4090.7,4102.5,4102.5,false,20,I need a sick woman.,15,61,I am a local voice assistant and cannot fulfill that request.,false
+12,2026-08-10T20:45:42.562,0.0,1084.3,,2209.8,2700.4,2468.6,2472.6,2472.6,false,10,Thank you.,14,54,You're welcome. Let me know if you need anything else.,false
+13,2026-08-10T20:54:45.402,0.0,1185.5,,2302.9,2701.9,2996.6,3006.1,3006.1,false,42,Who is the president of the United States?,14,56,The current president of the United States is Joe Biden.,false

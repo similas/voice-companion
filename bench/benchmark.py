@@ -292,7 +292,13 @@ def resolve_backend(cfg):
     backend = (cfg.get("llm.backend") or "ollama").strip()
     if backend == "llama_server":
         port = cfg.get("llm.llama_server.port", 8081)
-        return backend, f"http://127.0.0.1:{port}/v1", "gemma3"
+        # llama-server serves whatever single model it was started with and ignores
+        # the "model" field, so this name is purely for logs and result files. It was
+        # hardcoded to "gemma3", which meant a run against a completely different
+        # model still recorded itself as gemma3. Derive it from the configured path.
+        path = (cfg.get("llm.llama_server.model_path") or "").strip()
+        name = Path(path).stem if path else (cfg.get("llm.model") or "llama-server")
+        return backend, f"http://127.0.0.1:{port}/v1", name
     return backend, cfg.get("llm.base_url",
                             "http://localhost:11434/v1"), cfg.get("llm.model")
 
@@ -609,7 +615,11 @@ def main():
               f"misses={stt_spec['speculation_misses']}   "
               f"WER {stt_spec['wer_mean']*100:.1f}%")
 
-    p("\n[5/7] LLM text-only (gemma3 via llama-server)")
+    # Read the model from config rather than hardcoding it. The label said "gemma3"
+    # through an entire run of a different model, which is exactly the kind of thing
+    # that makes an old result file impossible to trust later.
+    _backend, _base, _model = resolve_backend(cfg)
+    p(f"\n[5/7] LLM text-only ({_model} via {_backend})")
     llm_text = bench_llm(cfg, VOICE_PROMPTS[:6], args.reps, label="text")
     p(f"      TTFT median {llm_text['ttft_ms']['median']:.0f} ms   "
       f"{llm_text['tokens_per_s']} tok/s")

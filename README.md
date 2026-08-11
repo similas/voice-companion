@@ -11,9 +11,69 @@ mic ──▶ VAD ──▶ STT ──▶ [camera, only when asked] ──▶ VL
 
 ---
 
-## Time to first audio — v0.2
+## Time to first audio — v0.3
 
 ### ▶ [Open the interactive dashboard](https://similas.github.io/voice-companion/)
+
+<p align="center">
+  <img src="bench/results/v0.3/ttfa.svg" alt="TTFA breakdown for v0.3" width="100%">
+</p>
+
+| | v0.1 | v0.2 | **v0.3** |
+|---|---|---|---|
+| composed TTFA (voice→voice) | 2891 ms | 613 ms | **545 ms** |
+| STT wait after turn end | 736 ms | 202 ms | **189 ms** |
+| LLM first token | 1855 ms | 158 ms | **85 ms** |
+| generation | 15.1 tok/s | 17.5 tok/s | **30.4 tok/s** |
+| live TTFA, real room, median of 22 turns | — | not recorded | **2784 ms** |
+
+The composed and live numbers are both real and they are not the same number.
+Composed is what the stages cost with the machine to themselves; live adds VAD
+close (0.8 s), a growing prompt, CPU contention, and playback pacing on a 7.6 GB
+board doing everything at once. v0.3 is the first version honest enough to print
+both.
+
+### What v0.3 actually is
+
+v0.2 chased speed. v0.3 chased the truth, and most of what it found was load-bearing:
+
+- **The LLM client was pointed at the wrong server.** It resolved, logged, and
+  warmed up llama-server — then built its client against Ollama's port from a
+  stale config default. Every turn made Ollama load a second 3 GB model + 942 MB
+  vision projector next to ours. On unified memory that froze the box hard enough
+  to need the plug pulled, four times, and looked exactly like "the agent is deaf".
+- **`ollama stop` allocates.** It is a generate request with `keep_alive=0`, so
+  the launcher's "free the GPU first" step was *loading* a model to unload it.
+  Removed; Ollama is disabled entirely — llama.cpp's server is driven directly.
+- **All swap on this board is zram** — compressed RAM. Under pressure it thrashes
+  to a standstill *before* the OOM killer can act, which is why nothing was ever
+  killed and no log was ever written. The stack now runs in a systemd slice with
+  a hard `MemoryMax`, swap denied, core dumps off, and an explicit OOM kill
+  order: llama-server first, agent second, sshd never. Verified by running an
+  unbounded allocator inside the slice while serving — the session survived.
+  Full story: [docs/memory.md](docs/memory.md).
+- **Model: gemma-4-E2B (QAT q4_0) via llama-server.** 30.4 tok/s, TTFT 85 ms.
+  It is a reasoning model, so `--reasoning off` is load-bearing: without it the
+  first audible word waits on an invisible thinking block.
+- **Mic: reSpeaker XVF3800 4-mic array** (flashed to USB-audio firmware — the
+  XIAO bundle ships in I2S mode and is invisible over USB until reflashed).
+  Measured against the webcam mic in the same room: speech 2.2× stronger, noise
+  floor 3× lower, ~17 dB SNR improvement, native 16 kHz.
+- **Utterances no longer lose their first word.** VAD spends 0.2 s deciding you
+  are speaking and used to discard that audio ("Tell me a joke" → "me a joke").
+  A 0.6 s pre-roll ring now backfills it — and the same ring fixed an unbounded
+  idle buffer that grew the agent to 2.3 GB overnight.
+- **The mic reopens 0.3 s after a reply, not ~5 s.** The echo gate books how long
+  the speaker will actually make sound; it was triple-counting because the
+  observer sees each frame at ~12 pipeline hops (and frame ids are not stable
+  across hops, so dedupe-by-id silently failed). Audio is now counted at exactly
+  one link — into the output transport. A turn you start a beat too early is
+  held and replayed instead of destroyed.
+- **Two agents can no longer run at once.** A kernel `flock` in run.sh. Two
+  instances answering each other through the room speaker reads exactly like
+  "the bot hears itself", and cost an evening.
+
+### Previous — v0.2
 
 Hover any stage for its share of the turn, toggle stages on and off, switch between the
 isolated benchmark and the live conversation, and hover individual turns to see what was
@@ -251,11 +311,15 @@ python3 -m virtualenv ~/.venvs/voice-companion
 ~/.venvs/voice-companion/bin/pip install -r requirements.txt
 ~/.venvs/voice-companion/bin/python -m piper.download_voices \
     en_US-lessac-medium --data-dir models
-ollama pull gemma3:4b
 
-python tools/check_env.py     # health check first
-./run.sh                      # foreground
-./watch.sh                    # follow turns + latencies
+# LLM weights. Not in the repo — 3.3 GB, and a verbatim copy of a published file.
+mkdir -p models && curl -L --fail -o models/gemma-4-E2B-q4_0.gguf \
+  https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/main/gemma-4-E2B_q4_0-it.gguf
+
+tools/llama_server.sh start   # llama.cpp server, with the memory guard
+python tools/check_env.py      # health check
+./run.sh                       # foreground
+./watch.sh                     # follow turns + latencies
 ./stop.sh
 ```
 

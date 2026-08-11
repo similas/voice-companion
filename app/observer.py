@@ -58,6 +58,12 @@ class LatencyObserver(BaseObserver):
 
     async def on_push_frame(self, data: FramePushed):
         frame = data.frame
+        # The one link every playable audio frame crosses exactly once: INTO the
+        # output transport. Counting there needs no id-based dedupe at all — which
+        # matters, because dedupe by frame id was tried for the gate's duration
+        # accounting and still triple-counted (frames are re-emitted as new
+        # instances at some hops, so ids are not stable across the pipeline).
+        dst_is_output = "OutputTransport" in type(data.destination).__name__
         m = self.metrics
 
         # ---- turn boundaries ----------------------------------------------
@@ -87,8 +93,7 @@ class LatencyObserver(BaseObserver):
 
         # ---- TTS + playback ------------------------------------------------
         if isinstance(frame, TTSAudioRawFrame):
-            # Not deduped by id on purpose: we want the FIRST chunk, and
-            # MetricsLogger.tts_first_audio is already first-write-wins.
+            # tts_first_audio is first-write-wins, so no dedupe needed for it.
             m.tts_first_audio()
             # Close the echo gate as soon as bot audio EXISTS, not when playback
             # is reported. BotStartedSpeaking can lag the first samples reaching
@@ -96,14 +101,18 @@ class LatencyObserver(BaseObserver):
             # transcribed as a user turn.
             if self.speaking:
                 self.speaking.started()
-                # Accumulate real audio duration so the gate can stay closed for
-                # as long as the speaker will actually be making noise — see
-                # SpeakingState. 16-bit PCM, so 2 bytes per sample per channel.
-                audio = getattr(frame, "audio", None)
-                rate = getattr(frame, "sample_rate", 0) or 0
-                ch = getattr(frame, "num_channels", 1) or 1
-                if audio and rate:
-                    self.speaking.add_audio(len(audio) / (rate * ch * 2))
+                # Count duration ONLY on the hop into the output transport. Every
+                # playable chunk crosses that link exactly once, so no dedupe is
+                # needed — and dedupe by frame id demonstrably failed here: with it
+                # in place, a ~3.5 s reply was still booked as 10.1 s, keeping the
+                # mic gated for ~5 phantom seconds after every reply.
+                # 16-bit PCM, so 2 bytes per sample per channel.
+                if dst_is_output:
+                    audio = getattr(frame, "audio", None)
+                    rate = getattr(frame, "sample_rate", 0) or 0
+                    ch = getattr(frame, "num_channels", 1) or 1
+                    if audio and rate:
+                        self.speaking.add_audio(len(audio) / (rate * ch * 2))
             return
 
         if isinstance(frame, BotStartedSpeakingFrame):

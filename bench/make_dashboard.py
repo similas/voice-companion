@@ -358,7 +358,7 @@ def main():
 
     d = ROOT / "bench" / "results" / args.tag
     b = json.loads((d / "benchmark.json").read_text())
-    live = load_live(d / "live-session-2026-08-05" / "live_turns.csv")
+    live = load_live(next(iter(sorted(d.glob("live-session-*/live_turns.csv"))), d / "no-live-session"))
 
     comp = b["composed_ttfa"]
     v2v, vi2v = comp.get("voice_to_voice"), comp.get("voice_image_to_voice")

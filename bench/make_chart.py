@@ -163,7 +163,7 @@ def main():
 
     d = ROOT / "bench" / "results" / args.tag
     bench = json.loads((d / "benchmark.json").read_text())
-    lt, lv = live_medians(d / "live-session-2026-08-05" / "live_turns.csv")
+    lt, lv = live_medians(next(iter(sorted(d.glob("live-session-*/live_turns.csv"))), d / "no-live-session"))
 
     svg = build(bench, lt, lv, args.tag)
     out = d / "ttfa.svg"
