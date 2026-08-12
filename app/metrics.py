@@ -322,6 +322,18 @@ class MetricsLogger:
         t.transcript = text
         self._awaiting.append(t)
 
+    def discard_last_turn_end(self):
+        """
+        The utterance that just ended was swallowed before a transcript was ever
+        pushed (asleep and no wake phrase, or a bare 'hey Roomi'). Its turn-end
+        stamp is already in the FIFO though — mark_turn_end fires on
+        UserStoppedSpeaking, before any transcript exists. Left there, the NEXT
+        real transcript would pair with this stale stamp and book a total that
+        includes the silence in between. Pop it.
+        """
+        if self._awaiting and not getattr(self._awaiting[-1], "written", False):
+            self._awaiting.pop()
+
     def vision_done(self):
         self._stamp("vision_done")
         t = self._target()

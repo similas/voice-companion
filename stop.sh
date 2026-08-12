@@ -16,4 +16,11 @@ fi
 if pgrep -f "app[.]main" >/dev/null; then
   echo "still running:"; pgrep -af "app[.]main"; exit 1
 fi
+# Release the single-instance lock if anything still holds it. The python is
+# dead by now, but a SUSPENDED run.sh wrapper (Ctrl-Z in a forgotten terminal,
+# state T) keeps fd 9 open forever and blocks every restart with "an agent is
+# already running" while no agent exists. Seen live 2026-08-11. fuser -k only
+# targets holders of THIS file, so it cannot touch anything else.
+cd "$(dirname "$0")"
+fuser -k logs/.agent.lock 2>/dev/null && sleep 1
 echo "stopped; camera $(fuser /dev/video0 2>/dev/null >/dev/null && echo 'STILL HELD' || echo free)"

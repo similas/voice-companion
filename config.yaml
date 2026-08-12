@@ -142,14 +142,26 @@ camera:
 # SPEECH TO TEXT
 # ---------------------------------------------------------------------------
 stt:
+  # ENGINE — which ASR decodes utterances (v0.4).
+  #
+  #   moonshine  DEFAULT. Moonshine (ONNX, float, CPU) — no 30 s padding
+  #              window, so a 3 s utterance costs 3 s of encoder. Measured on
+  #              this device, identical Piper-voiced prompts, cores 3-5:
+  #                  whisper-tiny int8   median 1017 ms   WER 16.7%
+  #                  moonshine-tiny f32  median  142 ms   WER  4.2%
+  #              7x faster AND 4x more accurate — and it transcribes silence
+  #              and noise as '' (verified), where whisper invented sentences.
+  #              English-only at this size; quantized variant measured WORSE
+  #              (180 ms, WER 16%) so float is deliberate.
+  #   whisper    faster-whisper / CTranslate2, the v0.1-v0.3 engine. Keeps
+  #              working with the same settings below.
+  engine: moonshine
   # MEASURED on this device with a 3.58 s utterance (short-form conversational
   # speech, which is all this ever sees):
-  #   tiny  853 ms  RTF 0.24x  -> "Hello there, what is 2 plus 2? Please answer briefly."
-  #   base 1369 ms  RTF 0.38x  -> "Hello there, what is 2 plus 2, please answer briefly."
-  # Identical content, 516 ms cheaper. STT is the largest fixed cost in the chain,
-  # so tiny is the right default. Switch to base if you hit accuracy trouble with
-  # accents, names, or background noise — and measure it in the CSV.
-  model: tiny               # tiny | base | small | medium | large-v3
+  #   whisper tiny  853 ms  RTF 0.24x  -> "Hello there, what is 2 plus 2? Please answer briefly."
+  #   whisper base 1369 ms  RTF 0.38x  -> "Hello there, what is 2 plus 2, please answer briefly."
+  # Both engines come in tiny/base; tiny is the measured sweet spot for both.
+  model: tiny               # moonshine: tiny | base    whisper: tiny .. large-v3
   device: cpu               # 'cpu' — see README: CTranslate2 has no Jetson CUDA build
   compute_type: int8        # int8 on CPU is ~2x faster than float32, same accuracy here
   language: en
@@ -266,16 +278,35 @@ llm:
   # the total passed num_ctx the model silently lost the start of the conversation.
   # 8 turns is plenty for spoken context and keeps prefill flat.
   max_history_turns: 8
-  # Kept deliberately terse. Every word here is prefill on EVERY turn, and prefill
-  # is pure added time-to-first-token.
-  system_prompt: >
-    You are a local voice assistant. Reply in one or two short spoken sentences.
-    No markdown, lists, or emoji. If shown an image, say briefly what you see.
+  # Prompts live in prompts/, not here or in code. Keep them terse: every word
+  # is prefill on EVERY turn, and prefill is pure added time-to-first-token.
+  system_prompt_file: prompts/system.txt
 
 # ---------------------------------------------------------------------------
 # TEXT TO SPEECH
 # ---------------------------------------------------------------------------
 tts:
+  # ENGINE — which voice actually speaks.
+  #
+  #   kokoro   Kokoro-82M on the GPU via a sidecar process (v0.4 DEFAULT).
+  #            Measured on this device: 357 ms to first audio for a typical
+  #            first clause, RTF 0.11-0.15 — Piper-class speed, far better
+  #            voice. Needs the sidecar running: tools/kokoro_server.sh start
+  #            If the sidecar is not reachable at startup the agent FALLS BACK
+  #            to Piper with a warning, so the voice never goes missing.
+  #   piper    in-process CPU synthesis (v0.1-v0.3 voice). ~250 ms first
+  #            audio, RTF 0.09, robotic but bulletproof.
+  #
+  # Why a sidecar: the agent venv pins onnxruntime 1.23.2 CPU (pipecat +
+  # Silero VAD); Kokoro-on-GPU needs the Jetson onnxruntime-gpu 1.24 wheel and
+  # the two cannot share a venv. See tools/kokoro_server.py.
+  engine: kokoro
+  kokoro:
+    port: 8092
+    voice: af_heart         # the one picked by ear from the voice bench
+    speed: 1.0
+
+  # Piper settings (fallback engine, and still used by bench/selftest).
   voice: en_US-lessac-medium
   models_dir: models        # relative to project root
   # use_cuda requires an onnxruntime built with CUDA. The PyPI aarch64 wheel is
@@ -413,3 +444,73 @@ runtime:
 # ---------------------------------------------------------------------------
 interruption:
   enabled: false            # bot speech is NOT interruptible; mic is closed while it talks
+
+# ---------------------------------------------------------------------------
+# TOOLS (integrations/)
+# ---------------------------------------------------------------------------
+# The model can call out to WHOOP, Spotify and the Govee lamp. Credentials live
+# in .env (gitignored), NEVER here — an integration whose credentials are
+# missing is silently absent: its schema is not sent to the model, so it costs
+# no prefill and cannot be called. Tool schemas are prefill like everything
+# else, but llama-server's prefix cache absorbs them after the first turn.
+tools:
+  enabled: true
+  # The system prompt used when at least one integration is live — a SEPARATE
+  # complete prompt, not an addendum spliced onto llm.system_prompt_file.
+  # Ordering is load-bearing: persona-first made the model answer "The lamp is
+  # now off." without calling anything (0/9 actionable requests); tool-role-
+  # first scored 12/14. Measured 2026-08-11 against gemma-4-E2B.
+  system_prompt_file: prompts/system_tools.txt
+
+# ---------------------------------------------------------------------------
+# WAKE — "hey Roomi"
+# ---------------------------------------------------------------------------
+# Phase 1: the wake decision is made on whisper's transcript, inside the STT
+# service (see app/wake.py for why it cannot be a pipeline processor). Costs
+# nothing extra — whisper already transcribes every VAD-passed utterance.
+# Phase 2 moves detection onto the reSpeaker's own XIAO ESP32-S3 so the Jetson
+# can idle; the filter here is the seam where that plugs in.
+wake:
+  enabled: true
+  # Matched as a word-prefix of the normalised transcript. Multiple spellings
+  # because whisper hears the SOUND — "roomy", "roomie" and "rumi" are all the
+  # same name, and refusing to wake over spelling would be absurd.
+  phrases:
+    - hey roomi
+    - hey roomy
+    - hey roomie
+    - hey rumi
+    - hey romy
+    - hi roomi
+    - hi roomy
+  # After any accepted interaction Roomi stays fully awake this long, and each
+  # turn refreshes it — a conversation should not need re-addressing per
+  # sentence. Bare "hey Roomi" also opens the window (chime acknowledges).
+  window_secs: 45
+  # Played instantly on every wake detection. Regenerate: tools/make_chime.py
+  chime: assets/roomi_chime.wav
+
+  # "bye Roomi" closes the window on the spot — matched at the start OR end of
+  # the utterance ("bye Roomi" / "ok thanks, bye Roomi"). Acknowledged with the
+  # descending chime, never with speech: a goodbye that makes Roomi talk more
+  # would defeat itself.
+  # Spellings observed from whisper on real audio — "bye roomi" elides: it was
+  # transcribed as 'by brooming.' in testing. Same policy as wake.phrases: match
+  # what the ASR actually writes, not what the dictionary wishes it wrote.
+  sleep_phrases:
+    - bye roomi
+    - bye roomy
+    - bye roomie
+    - bye rumi
+    - by roomi
+    - by roomy
+    - by roomie
+    - by rumi
+    - brooming
+    - by brooming
+    - bye brooming
+    - goodbye roomi
+    - goodbye roomy
+    - go to sleep roomi
+    - go to sleep roomy
+  sleep_chime: assets/roomi_sleep.wav

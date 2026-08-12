@@ -66,12 +66,25 @@ class SpeculativeWhisperSTTService(STTService):
                  compute_type: str = "int8", language: str = "en",
                  no_speech_prob: float = 0.6, min_chars: int = 8,
                  speculative: bool = True, sample_rate: int = 16000,
-                 save_dir=None, cpu_threads: int = 2, **kwargs):
+                 save_dir=None, cpu_threads: int = 2, wake_filter=None,
+                 engine: str = "whisper", **kwargs):
         # Declare every settings field explicitly. STTService logs an ERROR for any
         # field left NOT_GIVEN, and an error-level line about our own service being
         # misconfigured is noise that hides real problems.
         kwargs.setdefault("settings", STTSettings(model=model, language=language))
         super().__init__(sample_rate=sample_rate, **kwargs)
+        # ENGINE (v0.4): "moonshine" or "whisper". Same speculative machinery,
+        # different decoder. Measured on this device, identical Piper-voiced
+        # prompts, cores 3-5:
+        #     whisper-tiny int8   median 1017 ms   WER 16.7%
+        #     moonshine-tiny f32  median  142 ms   WER  4.2%
+        # 7x faster AND 4x more accurate — moonshine has no 30 s padding
+        # window, so a 3 s utterance costs 3 s of encoder, not 30. It also
+        # transcribes pure silence and noise as '' (verified), where whisper
+        # invented sentences and needed no_speech_prob + vad_filter to cope.
+        # Wake phrases verified against moonshine's spellings on the recorded
+        # test audio: 'Hey, roomy.' / 'Hey roommie' / 'By Rumi.' all match.
+        self._engine = engine
         self._model_name = model
         self._device = device
         self._compute_type = compute_type
@@ -79,6 +92,11 @@ class SpeculativeWhisperSTTService(STTService):
         self._no_speech_prob = no_speech_prob
         self._min_chars = min_chars
         self._speculative = speculative
+        # Wake gating happens HERE, where transcripts are born, not in a pipeline
+        # processor downstream — the observer sees every push, so a transcript
+        # that a later gate would swallow still opens a metrics turn. One that is
+        # never pushed never happened. See app/wake.py.
+        self._wake = wake_filter
         # Sized to the agent's core partition (3 cores, set in run.sh). Whisper
         # and Piper barely overlap inside a turn, so whisper gets the whole
         # partition; 2 threads was measured ~500 ms slower per decode.
@@ -88,6 +106,7 @@ class SpeculativeWhisperSTTService(STTService):
         self._utt = 0
 
         self._model = None
+        self._tokenizer = None          # moonshine only
         self._lock = threading.Lock()
         self._audio = np.zeros(0, dtype=np.float32)
         self._speaking = False
@@ -121,16 +140,29 @@ class SpeculativeWhisperSTTService(STTService):
     # -- lifecycle ---------------------------------------------------------
     async def start(self, frame: StartFrame):
         await super().start(frame)
-        if self._model is None:
+        if self._model is not None:
+            return
+        t0 = time.perf_counter()
+        if self._engine == "moonshine":
+            def load_moonshine():
+                from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+                m = MoonshineOnnxModel(model_name=self._model_name,
+                                       model_precision="float")
+                # Warm decode: the first generate() pays ONNX graph
+                # optimisation (~1 s); half a second of silence absorbs it
+                # here instead of on the user's first sentence.
+                m.generate(np.zeros((1, 8000), dtype=np.float32))
+                return m, load_tokenizer()
+            self._model, self._tokenizer = await asyncio.to_thread(load_moonshine)
+        else:
             from faster_whisper import WhisperModel
-            t0 = time.perf_counter()
             self._model = await asyncio.to_thread(
                 WhisperModel, self._model_name, device=self._device,
                 compute_type=self._compute_type, cpu_threads=self._cpu_threads)
-            logger.info(
-                f"stt: faster-whisper {self._model_name} ({self._compute_type}) "
-                f"loaded in {time.perf_counter()-t0:.1f}s"
-                f"{', speculative decoding on' if self._speculative else ''}")
+        logger.info(
+            f"stt: {self._engine} {self._model_name} "
+            f"loaded in {time.perf_counter()-t0:.1f}s"
+            f"{', speculative decoding on' if self._speculative else ''}")
 
     async def stop(self, frame: EndFrame):
         self._cancel_speculation()
@@ -142,6 +174,12 @@ class SpeculativeWhisperSTTService(STTService):
 
     # -- decode ------------------------------------------------------------
     def _decode(self, audio: np.ndarray) -> str:
+        if self._engine == "moonshine":
+            # No hallucination gating needed: moonshine returns '' on silence
+            # and noise (verified on this device), so whisper's no_speech_prob
+            # machinery has no equivalent here — there is nothing to filter.
+            tokens = self._model.generate(audio[None, ...])
+            return self._tokenizer.decode_batch(tokens)[0].strip()
         segs, _ = self._model.transcribe(
             audio, language=self._language, beam_size=1, temperature=0.0,
             condition_on_previous_text=False, vad_filter=True,
@@ -218,8 +256,17 @@ class SpeculativeWhisperSTTService(STTService):
             t0 = time.perf_counter()
             text = await self._finalise()
             took = (time.perf_counter() - t0) * 1000
+            # One uniform line for EVERY transcript, before any gate touches it —
+            # wake filter, noise gate, min-chars all act downstream of this. This
+            # is the complete record of what the ASR heard, whatever became of it.
+            if text:
+                logger.info(f"stt: heard {text!r} ({took:.0f}ms)")
             if len(text) >= self._min_chars:
                 logger.debug(f"stt: transcript in {took:.0f}ms after turn end")
+                if self._wake is not None:
+                    text = self._wake.filter(text)
+                    if not text:
+                        return          # asleep, or a bare wake — never happened
                 # NOTE: no _handle_transcription() call — that is a tracing hook on
                 # WhisperSTTService, not on the STTService base we subclass.
                 await self.push_frame(TranscriptionFrame(

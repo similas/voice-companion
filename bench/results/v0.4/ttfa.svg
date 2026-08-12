@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="262" viewBox="0 0 900 262" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
+<style>
+  .ttl { fill: #1f2328; font-weight: 600 }
+  .lbl { fill: #32383f }
+  .sub, .ax { fill: #6e7781 }
+  @media (prefers-color-scheme: dark) {
+    .ttl { fill: #e6edf3 }
+    .lbl { fill: #c9d1d9 }
+    .sub, .ax { fill: #8b949e }
+  }
+</style>
+<text x="0" y="24" font-size="17" class="ttl" fill="#adbac7">Time to first audio &#8212; v0.4</text>
+<text x="0" y="46" font-size="12.5" class="sub" fill="#8b949e">Jetson Orin Nano Super 8GB &#183; fully local &#183; bars = component benchmark, diamond = median of a real conversation</text>
+<line x1="210.0" y1="74" x2="210.0" y2="210" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="210.0" y="230" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">0s</text>
+<line x1="810.0" y1="74" x2="810.0" y2="210" stroke="#8b949e" stroke-opacity="0.22" stroke-width="1"/>
+<text x="810.0" y="230" font-size="11" class="ax" fill="#8b949e" text-anchor="middle">1s</text>
+<text x="0" y="102.7" font-size="13.5" font-weight="600" class="lbl" fill="#adbac7">voice → voice</text>
+<rect x="210.0" y="84.0" width="1.0" height="26" fill="#4c9f70" rx="2"/>
+<rect x="211.0" y="84.0" width="51.3" height="26" fill="#3f6fb5" rx="2"/>
+<text x="236.6" y="101.7" font-size="11" fill="#0d1117" fill-opacity="0.82" text-anchor="middle">86</text>
+<rect x="262.3" y="84.0" width="225.5" height="26" fill="#a4599b" rx="2"/>
+<text x="375.0" y="101.7" font-size="11" fill="#0d1117" fill-opacity="0.82" text-anchor="middle">376</text>
+<text x="497.7" y="102.7" font-size="13" font-weight="600" class="lbl" fill="#adbac7">0.46s</text>
+<rect x="210" y="241" width="11" height="11" fill="#4c9f70" rx="2"/>
+<text x="226" y="250" font-size="11.5" class="ax" fill="#8b949e">STT</text>
+<rect x="251.0" y="241" width="11" height="11" fill="#3f6fb5" rx="2"/>
+<text x="267.0" y="250" font-size="11.5" class="ax" fill="#8b949e">LLM first token</text>
+<rect x="376.0" y="241" width="11" height="11" fill="#a4599b" rx="2"/>
+<text x="392.0" y="250" font-size="11.5" class="ax" fill="#8b949e">TTS first audio</text>
+</svg>

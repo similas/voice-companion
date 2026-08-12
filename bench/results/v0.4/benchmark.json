@@ -1,0 +1,304 @@
+{
+  "tag": "v0.4",
+  "reps": 3,
+  "system": {
+    "timestamp_utc": "2026-08-12T20:06:45+00:00",
+    "device": "NVIDIA Jetson Orin Nano Super (8GB)",
+    "cpu": "ARMv8 Processor rev 1 (v8l)",
+    "cores": 6,
+    "gpu": "Ampere, 1024 CUDA cores, compute 8.7 (unified memory)",
+    "l4t": "# R36 (release), REVISION: 4.4, GCID: 41062509, BOARD: generic, EABI: aarch64, DATE: Mon Jun 16 16:07:13 UTC 2025",
+    "kernel": "5.15.148-tegra",
+    "python": "3.10.12",
+    "mem_total_mb": 7619,
+    "mem_available_mb": 1762,
+    "power_mode": "NV Power Mode: MAXN_SUPER 2",
+    "ollama_version": "Warning: could not connect to a running Ollama instance\nWarning: client version is 0.32.5",
+    "ollama_ps": "",
+    "models": {
+      "stt": "moonshine tiny (float, cpu)",
+      "llm": "gemma3:4b-jetson via llama_server",
+      "tts": "kokoro af_heart (GPU sidecar)",
+      "vad": "silero (onnxruntime)"
+    }
+  },
+  "config": {
+    "stt": {
+      "engine": "moonshine",
+      "model": "tiny",
+      "device": "cpu",
+      "compute_type": "int8",
+      "language": "en",
+      "no_speech_prob": 0.6,
+      "min_chars": 4,
+      "cpu_threads": 3,
+      "save_audio": false,
+      "save_audio_dir": "logs/turns",
+      "speculative": true
+    },
+    "llm": {
+      "backend": "llama_server",
+      "llama_server": {
+        "port": 8081,
+        "model_path": "models/gemma-4-E2B-q4_0.gguf",
+        "model_tag": "gemma3:4b",
+        "ctx_size": 2048,
+        "threads": 4
+      },
+      "model": "gemma3:4b-jetson",
+      "base_url": "http://localhost:11434/v1",
+      "num_ctx": 2048,
+      "temperature": 0.7,
+      "max_tokens": 60,
+      "max_history_turns": 8,
+      "system_prompt_file": "prompts/system.txt"
+    },
+    "tts": {
+      "engine": "kokoro",
+      "kokoro": {
+        "port": 8092,
+        "voice": "af_heart",
+        "speed": 1.0
+      },
+      "voice": "en_US-lessac-medium",
+      "models_dir": "models",
+      "use_cuda": false,
+      "clause_streaming": true,
+      "min_clause_chars": 18,
+      "first_chunk_chars": 46
+    },
+    "vad": {
+      "stop_secs": 0.8,
+      "start_secs": 0.2,
+      "confidence": 0.6,
+      "min_volume": 0.6
+    },
+    "camera": {
+      "device": 0,
+      "width": 1280,
+      "height": 720,
+      "max_edge": 896,
+      "jpeg_quality": 85,
+      "poll_fps": 4,
+      "idle_fps": 0.4,
+      "active_secs": 25,
+      "reuse_threshold": 0
+    },
+    "audio": {
+      "input_device": "pulse",
+      "output_device": "pulse",
+      "output_volume": 70,
+      "output_sample_rate": 48000,
+      "out_chunk_10ms": 1,
+      "sample_rate": 16000,
+      "channels": 1,
+      "suppress_echo": true,
+      "echo_tail_secs": 0.3
+    }
+  },
+  "stt": {
+    "load_ms": 2206.1,
+    "latency_ms": {
+      "n": 8,
+      "min": 82.6,
+      "median": 114.2,
+      "mean": 111.0,
+      "p90": 131.6,
+      "max": 136.0,
+      "stdev": 19.4
+    },
+    "realtime_factor": 0.057,
+    "wer_mean": 0.0139,
+    "wer_median": 0.0,
+    "exact_match_rate": 0.875,
+    "examples": [
+      {
+        "said": "What is the capital of France?",
+        "heard": "What is the capital of France?",
+        "wer": 0.0,
+        "ms": 98.5
+      },
+      {
+        "said": "Can you hear me clearly?",
+        "heard": "Can you hear me clearly?",
+        "wer": 0.0,
+        "ms": 85.8
+      },
+      {
+        "said": "Tell me one interesting fact about the ocean.",
+        "heard": "Tell me one interesting fact about the ocean.",
+        "wer": 0.0,
+        "ms": 123.2
+      },
+      {
+        "said": "What time does the sun usually set in summer?",
+        "heard": "What time does the sun usually set in summer?",
+        "wer": 0.0,
+        "ms": 136.0
+      },
+      {
+        "said": "Count from one to five for me.",
+        "heard": "Count from one to five for me.",
+        "wer": 0.0,
+        "ms": 105.1
+      },
+      {
+        "said": "How would you describe the colour blue to someone?",
+        "heard": "How would you describe the color blue to someone?",
+        "wer": 0.111,
+        "ms": 124.8
+      },
+      {
+        "said": "Give me a short suggestion for dinner tonight.",
+        "heard": "Give me a short suggestion for dinner tonight.",
+        "wer": 0.0,
+        "ms": 131.6
+      },
+      {
+        "said": "What is two plus two?",
+        "heard": "What is two plus two?",
+        "wer": 0.0,
+        "ms": 82.6
+      }
+    ]
+  },
+  "stt_speculative": {
+    "wait_after_turn_end_ms": {
+      "n": 7,
+      "min": 1.6,
+      "median": 1.6,
+      "mean": 1.6,
+      "p90": 1.6,
+      "max": 1.6,
+      "stdev": 0.0
+    },
+    "raw_decode_median_ms": 114.2,
+    "saved_ms": 112.6,
+    "speculation_hits": 8,
+    "speculation_misses": 0,
+    "wer_mean": 0.0159,
+    "examples": [
+      {
+        "said": "Can you hear me clearly?",
+        "heard": "Can you hear me clearly?"
+      },
+      {
+        "said": "Tell me one interesting fact about the ocean.",
+        "heard": "Tell me one interesting fact about the ocean."
+      },
+      {
+        "said": "What time does the sun usually set in summer?",
+        "heard": "What time does the sun usually set in summer?"
+      },
+      {
+        "said": "Count from one to five for me.",
+        "heard": "Count from one to five for me."
+      }
+    ]
+  },
+  "tts": {
+    "load_ms": 0.0,
+    "synth_ms": {
+      "n": 3,
+      "min": 353.8,
+      "median": 375.8,
+      "mean": 376.8,
+      "p90": 401.0,
+      "max": 401.0,
+      "stdev": 19.3
+    },
+    "realtime_factor": 0.147,
+    "sample_text": "That's four. Is there anything else you would like to know?",
+    "engine": "kokoro (GPU sidecar)"
+  },
+  "llm_text": {
+    "mode": "text",
+    "ttft_ms": {
+      "n": 18,
+      "min": 81.5,
+      "median": 85.5,
+      "mean": 105.6,
+      "p90": 140.8,
+      "max": 174.9,
+      "stdev": 29.5
+    },
+    "total_ms": {
+      "n": 18,
+      "min": 357.4,
+      "median": 1996.6,
+      "mean": 1501.4,
+      "p90": 2066.3,
+      "max": 2116.9,
+      "stdev": 747.2
+    },
+    "tokens_per_s": 31.08,
+    "samples": [
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is **Paris**.",
+        "ttft_ms": 174.9,
+        "tokens": 8
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is **Paris**.",
+        "ttft_ms": 95.3,
+        "tokens": 8
+      },
+      {
+        "prompt": "What is the capital of France?",
+        "reply": "The capital of France is **Paris**.",
+        "ttft_ms": 84.6,
+        "tokens": 8
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "As Gemma 4, a Large Language Model, I process the text you write. I don't have ears, so I don't \"hear\" audio in the human sense.\n\nHowever, if you are interactin",
+        "ttft_ms": 142.8,
+        "tokens": 60
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "I am a text-based AI, so I don't have ears to hear sound directly.\n\nHowever, if you are using a voice input feature (like a microphone or a voice-to-text system",
+        "ttft_ms": 86.7,
+        "tokens": 60
+      },
+      {
+        "prompt": "Can you hear me clearly?",
+        "reply": "As a large language model, I don't have ears or a voice in the way humans do, so I can't \"hear\" you.\n\nHowever, I can process the text you type very clearly! I a",
+        "ttft_ms": 84.7,
+        "tokens": 60
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "Here's an interesting fact about the ocean:\n\n**The ocean contains more water than all the land combined.**\n\nWhile this might sound obvious, the sheer volume is ",
+        "ttft_ms": 139.9,
+        "tokens": 60
+      },
+      {
+        "prompt": "Tell me one interesting fact about the ocean.",
+        "reply": "One of the most fascinating facts about the ocean is that **nearly 80% of the ocean remains completely unexplored by humans.**\n\nEven with advanced technology li",
+        "ttft_ms": 85.2,
+        "tokens": 60
+      }
+    ]
+  },
+  "llm_vision": null,
+  "camera": null,
+  "vision_trigger": {
+    "cases": 17,
+    "correct": 17,
+    "accuracy": 1.0,
+    "sticky_followup_works": true,
+    "failures": []
+  },
+  "composed_ttfa": {
+    "voice_to_voice": {
+      "stt_ms": 1.6,
+      "llm_first_token_ms": 85.5,
+      "tts_first_audio_ms": 375.8,
+      "ttfa_ms": 462.9
+    },
+    "voice_image_to_voice": null
+  }
+}

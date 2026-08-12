@@ -27,3 +27,8 @@ hardware/respeaker/*.bin
 # single-instance lock + pid — runtime state, never commit
 logs/.agent.lock
 logs/.agent.pid
+
+# credentials — never commit
+.env
+# WHOOP rotates refresh tokens; the live one is state, not source
+.whoop_tokens.json

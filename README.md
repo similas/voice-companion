@@ -11,27 +11,85 @@ mic ──▶ VAD ──▶ STT ──▶ [camera, only when asked] ──▶ VL
 
 ---
 
-## Time to first audio — v0.3
+## Time to first audio — v0.4
 
 ### ▶ [Open the interactive dashboard](https://similas.github.io/voice-companion/)
 
 <p align="center">
-  <img src="bench/results/v0.3/ttfa.svg" alt="TTFA breakdown for v0.3" width="100%">
+  <img src="bench/results/v0.4/ttfa.svg" alt="TTFA breakdown for v0.4" width="100%">
 </p>
 
-| | v0.1 | v0.2 | **v0.3** |
-|---|---|---|---|
-| composed TTFA (voice→voice) | 2891 ms | 613 ms | **545 ms** |
-| STT wait after turn end | 736 ms | 202 ms | **189 ms** |
-| LLM first token | 1855 ms | 158 ms | **85 ms** |
-| generation | 15.1 tok/s | 17.5 tok/s | **30.4 tok/s** |
-| live TTFA, real room, median of 22 turns | — | not recorded | **2784 ms** |
+| | v0.1 | v0.2 | v0.3 | **v0.4** |
+|---|---|---|---|---|
+| composed TTFA (voice→voice) | 2891 ms | 613 ms | 545 ms | **463 ms** |
+| STT wait after turn end | 736 ms | 202 ms | 189 ms | **2 ms** |
+| STT word error rate | 11.3% | 9.96% | ~10% | **1.4%** |
+| LLM first token | 1855 ms | 158 ms | 85 ms | **86 ms** |
+| generation | 15.1 tok/s | 17.5 tok/s | 30.4 tok/s | **31.1 tok/s** |
+| live TTFA, real room | — | not recorded | 2784 ms | not yet recorded |
 
 The composed and live numbers are both real and they are not the same number.
 Composed is what the stages cost with the machine to themselves; live adds VAD
 close (0.8 s), a growing prompt, CPU contention, and playback pacing on a 7.6 GB
-board doing everything at once. v0.3 is the first version honest enough to print
-both.
+board doing everything at once.
+
+### What v0.4 actually is
+
+v0.4 gives the companion a name, hands, a better ear, and a better voice — and
+it is *still* faster than v0.3:
+
+- **"Hey Roomi" / "bye Roomi".** Wake gating runs on the transcript, INSIDE the
+  STT service — a downstream gate would leave half-open metrics turns for every
+  ignored utterance (see `app/wake.py`). The name is matched as a *phonetic
+  shape* (`^b?r[ou]+m[a-z]*$`), not a spelling list: the ASR wrote 'Roomy',
+  'roommie' and 'by brooming' for the same sounds in one evening, and
+  enumerating spellings lost that race twice. A rising chime acknowledges wake,
+  a falling one sleep; a 45 s window, refreshed per turn, means a conversation
+  is addressed once.
+- **Tools.** Gemma 4's chat template does native tool calling through
+  llama-server's OpenAI API, and Pipecat 0.0.108 already ships the whole
+  call-dispatch-rerun loop — so `integrations/` is just (schema, handler)
+  pairs: **WHOOP** (recovery, sleep, strain, workouts — OAuth with rotating
+  refresh tokens), **Govee** (lamp over the LAN, one UDP datagram, no cloud),
+  **Spotify** (Web API, pending credentials), and `recovery_light` — "show my
+  recovery on the lamp" maps WHOOP's zones onto lamp colors. Credentials live
+  in `.env` (gitignored); an integration without credentials is *absent* — its
+  schema is never sent, so it costs no prefill and cannot be called.
+- **Prompt ordering is load-bearing for tool calls.** With the persona first
+  ("reply in one or two short sentences") the model obeyed it literally and
+  *pretended* to act — "The lamp is now off," zero tool calls, 0/9. Leading
+  with the tool role scored 13/14. Prompts live in `prompts/` as two complete
+  tested files, not a persona + addendum splice, and nothing spoken is
+  hardcoded.
+- **New ear: Moonshine tiny** (ONNX, float, CPU) replaces faster-whisper tiny.
+  Measured on identical Piper-voiced prompts: median decode **1017 → 114 ms**
+  and WER **16.7% → 1.4%** — 7× faster and far more accurate, simultaneously.
+  No 30 s padding window, so a 3 s utterance costs 3 s of encoder. It
+  transcribes silence and noise as `''` (verified), where whisper invented
+  sentences and needed three stacked filters. At 114 ms the decode now hides
+  *entirely* inside the VAD hangover: speculation went 8/8 and the measured
+  wait after turn end is **2 ms**. `stt.engine: whisper` switches back.
+- **New voice: Kokoro-82M on the GPU**, 376 ms to first audio at RTF 0.15 —
+  Piper-class speed, dramatically better voice (picked by ear from a published
+  A/B/C bench). It runs as a **sidecar**: the agent venv pins onnxruntime
+  1.23.2 CPU (pipecat + Silero VAD) while Kokoro needs the Jetson
+  onnxruntime-gpu 1.24 wheel, and the two cannot share a venv — worse, the GPU
+  build would silently put VAD on the GPU with a memcpy per 32 ms frame. So
+  Kokoro lives in its own venv and process (`tools/kokoro_server.{py,sh}`),
+  capped at 1200M inside voice.slice, and the agent **falls back to Piper**
+  if the sidecar is down. Pocket TTS was also benchmarked: lovely voice,
+  RTF 2.2 on these cores — it cannot outrun its own playback and was
+  disqualified by silicon, not quality.
+- **voice.slice grew** to `MemoryHigh=4200M / MemoryMax=5000M` for the
+  sidecar's measured ~850 MB. The stack is now llama-server (~2450) + agent
+  (~700) + kokoro (~850) ≈ 4000 MB, each with its own ceiling and an explicit
+  OOM order: llama first, kokoro second, agent third, sshd never.
+- **Assorted traps found on the way:** WHOOP's API sits behind Cloudflare and
+  403s Python's default User-Agent ("error code: 1010") before the request
+  reaches WHOOP; WHOOP rotates refresh tokens so the live one is state, not
+  config (`.whoop_tokens.json`); and a Ctrl-Z'd `run.sh` in a forgotten
+  terminal holds the singleton flock forever — a suspended shell can't die —
+  so `stop.sh` now clears lock holders with `fuser -k`.
 
 ### What v0.3 actually is
 
@@ -170,11 +228,13 @@ not help because Gemma 3 resizes to a fixed 896×896 internally.
 |---|---|---|
 | Orchestration | **Pipecat 0.0.108** | pinned — 1.x needs `onnxruntime~=1.24.3`, which has no aarch64 wheel |
 | Inference server | **llama.cpp `llama-server`**, run directly | 91% lower TTFT than Ollama; `tools/llama_server.sh` |
-| STT | **faster-whisper `tiny`**, int8, CPU | CTranslate2 backend, decoded speculatively during the VAD hangover |
-| Brain (text + vision) | **Gemma 3 4B**, Q4_K_M | one model for both; 100% GPU-offloaded. GGUF reused from Ollama's store |
-| TTS | **Piper**, `en_US-lessac-medium` | 0.09× realtime, CPU |
-| VAD / turn-taking | **Silero VAD** (onnxruntime) | 0.5 s of silence ends your turn; `STOPPING` triggers speculative STT |
-| Audio I/O | **PortAudio** → **PipeWire** → A2DP | PortAudio cannot see Bluetooth sinks directly |
+| STT | **Moonshine `tiny`**, float ONNX, CPU | 114 ms decode, WER 1.4%; speculative during the VAD hangover. `stt.engine: whisper` for the old ear |
+| Brain (text + vision + tools) | **gemma-4-E2B**, QAT q4_0 | native tool calling; `--reasoning off` is load-bearing; 100% GPU |
+| TTS | **Kokoro-82M `af_heart`**, GPU sidecar | 376 ms first audio, RTF 0.15; `tools/kokoro_server.sh`; falls back to Piper |
+| Wake word | **transcript-shape matching** in the STT service | "hey Roomi" / "bye Roomi", chime-acknowledged; `app/wake.py` |
+| Tools | **integrations/** — WHOOP, Govee (LAN), Spotify | credentials in `.env`; missing credentials = tool absent, zero prefill |
+| VAD / turn-taking | **Silero VAD** (onnxruntime) | 0.8 s of silence ends your turn; `STOPPING` triggers speculative STT |
+| Audio I/O | **PortAudio** → **PipeWire** | reSpeaker XVF3800 4-mic in, USB speaker out |
 | Vision capture | **OpenCV** + **V4L2**, MJPEG | frame kept fresh by a background drain thread |
 
 **No PyTorch.** faster-whisper uses CTranslate2 and Silero VAD uses onnxruntime, which
@@ -281,8 +341,11 @@ in `benchmark.json` under `stt.examples` if you want to judge for yourself.
 
 ```
 app/
-  main.py       pipeline assembly, EchoGate, NoiseGate, VisionGate, ImageMerger
-  stt_stream.py speculative Whisper — decodes during the VAD hangover
+  main.py       pipeline assembly, EchoGate, NoiseGate, VisionGate, ImageMerger,
+                tool registration, engine selection with fallbacks
+  stt_stream.py speculative STT (moonshine or whisper) — decodes in the VAD hangover
+  wake.py       "hey Roomi" — transcript-shape wake/sleep gating, chimes
+  tts_kokoro.py thin client for the Kokoro GPU sidecar
   vad_hook.py   Silero wrapper that reports the STOPPING edge
   tts_stream.py clause-level aggregation so speech starts on the first clause
   stt.py        non-speculative Whisper with hallucination suppression (fallback)
@@ -290,13 +353,23 @@ app/
   metrics.py    per-turn latency records, CSV, FIFO turn attribution
   observer.py   passive Pipecat observer that timestamps every stage
   config.py     config loading
+integrations/   one file per external service; (schema, handler) pairs
+  whoop.py      recovery / sleep / strain / workouts, rotating-token OAuth
+  govee.py      lamp over LAN UDP (cloud fallback)
+  spotify.py    playback control via the Web API
+prompts/        ALL spoken/system prompts live here, nothing in code
+  system.txt          persona, used when no integration is live
+  system_tools.txt    tool-role-first variant (ordering is load-bearing)
+.env            credentials (gitignored); missing keys silently disable a tool
 config.yaml     every model, device and threshold, with measurements in comments
 bench/
   benchmark.py  component + end-to-end benchmark (no human needed)
   make_chart.py renders the TTFA chart from results
   results/v0.1/ benchmark.json, ttfa.svg, and the live session it is compared against
 tools/
-  llama_server.sh  start/stop the llama.cpp server (refuses a silent CPU-only start)
+  llama_server.sh   start/stop the llama.cpp server (refuses a silent CPU-only start)
+  kokoro_server.sh  start/stop the Kokoro GPU TTS sidecar (venv recipe in header)
+  whoop_auth.py     one-time WHOOP OAuth -> refresh token into .env
   check_env.py  environment doctor; --list-audio for PyAudio indices
   selftest.py   exercises everything except the microphone
   bt_speaker.sh pair/connect a Bluetooth speaker

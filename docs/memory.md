@@ -61,14 +61,18 @@ that can grow* does.
 **One slice for the whole stack** — `~/.config/systemd/user/voice.slice`:
 
 ```ini
-MemoryHigh=3800M      # throttle: stack gets slow before anything dies
-MemoryMax=4600M       # hard wall, enforced by the kernel
+MemoryHigh=4200M      # throttle: stack gets slow before anything dies
+MemoryMax=5000M       # hard wall, enforced by the kernel
 MemorySwapMax=0       # no zram, so pressure cannot become a thrash spiral
 ```
 
-Both `llama-server.service` and the agent (via `systemd-run --scope` in `run.sh`)
-run inside it. A shortfall is now a contained cgroup event; the kernel never has to
-look outside the slice, so sshd is never a candidate.
+(Originally 3800M/4600M; raised 2026-08-12 when the kokoro-tts sidecar —
+~850 MB measured RSS — joined the slice.)
+
+`llama-server.service`, `kokoro-tts.service` and the agent (via
+`systemd-run --scope` in `run.sh`) all run inside it. A shortfall is now a
+contained cgroup event; the kernel never has to look outside the slice, so
+sshd is never a candidate.
 
 **Explicit kill ordering**, as a backstop for anything the cgroup misses. Raising
 `oom_score_adj` needs no privileges — only lowering it does — so this works as an
@@ -77,8 +81,9 @@ ordinary user:
 | process | `oom_score_adj` | `oom_score` | dies |
 |---|---|---|---|
 | llama-server | 1000 | 1384 | first |
-| voice agent | 900 | 1290 | second |
-| sshd (session) | 0 | 666 | only if both are already gone |
+| kokoro-tts | 950 | — | second |
+| voice agent | 900 | 1290 | third |
+| sshd (session) | 0 | 666 | only if all are already gone |
 
 **No core dumps** from our processes: `LimitCORE=0` on the llama-server unit, and
 `resource.setrlimit(RLIMIT_CORE, (0,0))` in the agent. A crash we restart from is

@@ -43,6 +43,7 @@ from pipecat.services.ollama.llm import OLLamaLLMService
 from pipecat.services.piper.tts import PiperTTSService
 from pipecat.services.whisper.stt import WhisperSTTService
 
+import integrations
 from app import config as config_mod
 from app.metrics import MetricsLogger, SpeakingState
 from app.observer import LatencyObserver
@@ -50,6 +51,7 @@ from app.stt import StrictWhisperSTTService
 from app.stt_stream import SpeculativeWhisperSTTService
 from app.tts_stream import ClauseAggregator
 from app.vad_hook import HookedSileroVAD
+from app.wake import WakeFilter
 from app.vision import Camera, VisionTrigger
 
 
@@ -173,6 +175,41 @@ def resolve_audio_device(spec, want_output: bool) -> Optional[int]:
         return idx
     finally:
         pa.terminate()
+
+
+def tool_handler(t):
+    """Adapt one integrations.Tool to Pipecat's FunctionCallParams contract.
+
+    Errors become short strings handed back to the model — the reply turns into
+    a one-sentence apology instead of the pipeline dying mid-turn. The user is
+    mid-conversation when a cloud API times out; they should hear that, not
+    silence.
+    """
+    async def handle(params):
+        try:
+            result = await t.run(**dict(params.arguments or {}))
+            logger.info(f"tool: {t.name}({params.arguments}) -> {result!r}")
+        except Exception as e:
+            logger.warning(f"tool: {t.name} failed: {e}")
+            result = f"{t.name} failed: {e}"
+        await params.result_callback(result)
+    return handle
+
+
+def build_system_prompt(cfg, have_tools: bool) -> str:
+    """Prompts live in prompts/ as plain text — nothing spoken is hardcoded.
+
+    Two COMPLETE prompts, not a persona + tools splice. Ordering inside the
+    prompt is load-bearing on this model: with the persona first ("reply in
+    one or two short sentences") gemma-4-E2B obeyed it literally and answered
+    "The lamp is now off." without ever calling the tool — 0/9 actionable
+    requests. Leading with the tool role and subordinating the style rule
+    ("for everything else, and after a tool returns...") scored 12/14.
+    Measured 2026-08-11; each variant therefore ships as one tested file.
+    """
+    key = "tools.system_prompt_file" if have_tools else "llm.system_prompt_file"
+    default = "prompts/system_tools.txt" if have_tools else "prompts/system.txt"
+    return cfg.path(key, default).read_text().strip()
 
 
 def resolve_llm(cfg):
@@ -730,6 +767,7 @@ async def build_and_run(cfg) -> int:
     if cfg.get("stt.speculative", True):
         # Decodes during the VAD hangover instead of after it — see app/stt_stream.
         stt = SpeculativeWhisperSTTService(
+            engine=cfg.get("stt.engine", "whisper"),
             model=cfg.get("stt.model", "tiny"),
             device=cfg.get("stt.device", "cpu"),
             compute_type=cfg.get("stt.compute_type", "int8"),
@@ -738,6 +776,16 @@ async def build_and_run(cfg) -> int:
             min_chars=cfg.get("stt.min_chars", 8),
             cpu_threads=cfg.get("stt.cpu_threads", 2),
             sample_rate=sample_rate,
+            wake_filter=WakeFilter(
+                phrases=cfg.get("wake.phrases", []),
+                window_secs=cfg.get("wake.window_secs", 45),
+                chime=cfg.path("wake.chime") if cfg.get("wake.chime") else None,
+                metrics=metrics,
+                enabled=cfg.get("wake.enabled", False),
+                sleep_phrases=cfg.get("wake.sleep_phrases", []),
+                sleep_chime=(cfg.path("wake.sleep_chime")
+                             if cfg.get("wake.sleep_chime") else None),
+            ),
             # Dump the exact audio whisper sees, so "it misheard me" can be pinned
             # on the microphone or on the model instead of argued about.
             save_dir=(cfg.path("stt.save_audio_dir", "logs/turns")
@@ -785,9 +833,21 @@ async def build_and_run(cfg) -> int:
         base_url=llm_url,
     )
     logger.info(f"llm client -> {llm_url} (model {llm_model})")
-    context = OpenAILLMContext(messages=[
-        {"role": "system", "content": cfg.get("llm.system_prompt", "").strip()},
-    ])
+
+    # ---- tools ---------------------------------------------------------
+    # integrations.load() reads .env and returns only the integrations whose
+    # credentials exist. Pipecat owns the loop from here: it assembles the
+    # streamed tool_calls, runs the registered handler, appends the result to
+    # the context, and re-prompts the model for the spoken reply.
+    tools = integrations.load() if cfg.get("tools.enabled", True) else []
+    for t in tools:
+        llm.register_function(t.name, tool_handler(t))
+
+    context = OpenAILLMContext(
+        messages=[{"role": "system",
+                   "content": build_system_prompt(cfg, bool(tools))}],
+        **({"tools": [t.schema for t in tools]} if tools else {}),
+    )
     aggregator = llm.create_context_aggregator(context)
 
     # ---- TTS ---------------------------------------------------------------
@@ -797,14 +857,38 @@ async def build_and_run(cfg) -> int:
             min_clause_chars=cfg.get("tts.min_clause_chars", 18),
             first_chunk_chars=cfg.get("tts.first_chunk_chars", 46),
         )
-    tts = PiperTTSService(
-        settings=PiperTTSService.Settings(
-            voice=cfg.get("tts.voice", "en_US-lessac-medium")),
-        download_dir=cfg.path("tts.models_dir", "models"),
-        use_cuda=cfg.get("tts.use_cuda", False),
-        sample_rate=out_rate,      # match the transport; avoids a second resample
-        **tts_kwargs,
-    )
+    # Kokoro (GPU sidecar) when configured AND reachable; Piper otherwise. The
+    # fallback is deliberate: a missing sidecar must degrade the voice, never
+    # silence it — same philosophy as bt_ensure's analog fallback.
+    tts = None
+    tts_desc = None
+    if cfg.get("tts.engine", "piper") == "kokoro":
+        from app.tts_kokoro import KokoroSidecarTTSService, sidecar_healthy
+        k_url = f"http://127.0.0.1:{cfg.get('tts.kokoro.port', 8092)}"
+        k_voice = cfg.get("tts.kokoro.voice", "af_heart")
+        if sidecar_healthy(k_url):
+            tts = KokoroSidecarTTSService(
+                url=k_url, voice=k_voice,
+                speed=cfg.get("tts.kokoro.speed", 1.0),
+                sample_rate=out_rate,
+                **tts_kwargs,
+            )
+            tts_desc = f"Kokoro {k_voice} (GPU sidecar)"
+            logger.info(f"tts: kokoro sidecar at {k_url}, voice {k_voice}")
+        else:
+            logger.warning(f"tts: kokoro sidecar not reachable at {k_url} — "
+                           "FALLING BACK to Piper. Start it: "
+                           "tools/kokoro_server.sh start")
+    if tts is None:
+        tts = PiperTTSService(
+            settings=PiperTTSService.Settings(
+                voice=cfg.get("tts.voice", "en_US-lessac-medium")),
+            download_dir=cfg.path("tts.models_dir", "models"),
+            use_cuda=cfg.get("tts.use_cuda", False),
+            sample_rate=out_rate,  # match the transport; avoids a second resample
+            **tts_kwargs,
+        )
+        tts_desc = tts_desc or f"Piper {cfg.get('tts.voice')}"
 
     gate = VisionGate(camera, trigger, context, metrics,
                       max_edge=cfg.get("camera.max_edge", 896),
@@ -867,7 +951,7 @@ async def build_and_run(cfg) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop)
 
-    banner(cfg, metrics)
+    banner(cfg, metrics, tools, tts_desc)
     try:
         await runner.run(task)
     finally:
@@ -878,7 +962,7 @@ async def build_and_run(cfg) -> int:
     return 0
 
 
-def banner(cfg, metrics):
+def banner(cfg, metrics, _tools=(), _tts_desc=None):
     # Report the backend we ACTUALLY resolved, not a hardcoded guess. This line
     # read "<llm.model> via Ollama" unconditionally, so it announced a stale model
     # name and the wrong engine while every request went to llama-server.
@@ -889,9 +973,10 @@ def banner(cfg, metrics):
         _brain = f"{cfg.get('llm.model')} via Ollama"
     print(f"""
   ┌─ local voice + vision companion ──────────────────────────────
-  │  STT     faster-whisper {cfg.get('stt.model')} ({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})
+  │  STT     {cfg.get('stt.engine', 'whisper')} {cfg.get('stt.model')} (cpu, speculative)
   │  brain   {_brain}
-  │  TTS     Piper {cfg.get('tts.voice')}
+  │  TTS     {_tts_desc or f"Piper {cfg.get('tts.voice')}"}
+  │  tools   {', '.join(t.name for t in _tools) if _tools else 'none — add credentials to .env'}
   │  vision  {'on — camera used only when you ask' if cfg.get('vision.enabled') else 'off'}
   │  barge-in {'enabled' if cfg.get('interruption.enabled') else 'disabled'}
   │  metrics {metrics.path.name}

@@ -188,10 +188,14 @@ def system_info(cfg):
         "ollama_version": sh(["ollama", "--version"]),
         "ollama_ps": sh(["ollama", "ps"]),
         "models": {
-            "stt": f"faster-whisper {cfg.get('stt.model')} "
-                   f"({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})",
+            "stt": (f"moonshine {cfg.get('stt.model')} (float, cpu)"
+                    if cfg.get("stt.engine") == "moonshine" else
+                    f"faster-whisper {cfg.get('stt.model')} "
+                    f"({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})"),
             "llm": f"{cfg.get('llm.model')} via {(cfg.get('llm.backend') or 'ollama')}",
-            "tts": f"piper {cfg.get('tts.voice')}",
+            "tts": (f"kokoro {cfg.get('tts.kokoro.voice')} (GPU sidecar)"
+                    if cfg.get("tts.engine") == "kokoro" else
+                    f"piper {cfg.get('tts.voice')}"),
             "vad": "silero (onnxruntime)",
         },
     }
@@ -218,14 +222,39 @@ def synth_prompts(cfg, texts, outdir):
 
 
 def bench_tts(cfg, reps):
+    # A typical spoken reply from this assistant: one to two short sentences.
+    sample = "That's four. Is there anything else you would like to know?"
+
+    if cfg.get("tts.engine") == "kokoro":
+        # The sidecar synthesises a whole clause per request, so one request's
+        # wall time IS time-to-first-audio for that clause — same quantity the
+        # piper branch measures.
+        port = cfg.get("tts.kokoro.port", 8092)
+        url = f"http://127.0.0.1:{port}/tts"
+        body = json.dumps({"text": sample,
+                           "voice": cfg.get("tts.kokoro.voice", "af_heart")}).encode()
+        times, rtfs = [], []
+        for _ in range(reps + 1):               # first rep warms, then measure
+            t0 = time.perf_counter()
+            req = urllib.request.Request(
+                url, data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                pcm = r.read()
+                sr = int(r.headers.get("X-Sample-Rate", "24000"))
+            dt = (time.perf_counter() - t0) * 1000
+            times.append(dt)
+            rtfs.append(dt / 1000 / (len(pcm) / 2 / sr))
+        times, rtfs = times[1:], rtfs[1:]
+        return {"load_ms": 0.0, "synth_ms": stats(times),
+                "realtime_factor": round(st.median(rtfs), 3),
+                "sample_text": sample, "engine": "kokoro (GPU sidecar)"}
+
     from piper import PiperVoice
     voice_path = cfg.path("tts.models_dir") / f"{cfg.get('tts.voice')}.onnx"
     t0 = time.perf_counter()
     voice = PiperVoice.load(str(voice_path))
     load_ms = (time.perf_counter() - t0) * 1000
 
-    # A typical spoken reply from this assistant: one to two short sentences.
-    sample = "That's four. Is there anything else you would like to know?"
     times, rtfs = [], []
     tmp = Path("/tmp/bench_tts.wav")
     for _ in range(reps):
@@ -240,24 +269,35 @@ def bench_tts(cfg, reps):
     tmp.unlink(missing_ok=True)
     return {"load_ms": round(load_ms, 1), "synth_ms": stats(times),
             "realtime_factor": round(st.median(rtfs), 3),
-            "sample_text": sample}
+            "sample_text": sample, "engine": "piper"}
 
 
 def bench_stt(cfg, prompts, reps):
-    from faster_whisper import WhisperModel
     t0 = time.perf_counter()
-    model = WhisperModel(cfg.get("stt.model"), device=cfg.get("stt.device"),
-                         compute_type=cfg.get("stt.compute_type"))
-    load_ms = (time.perf_counter() - t0) * 1000
+    if cfg.get("stt.engine") == "moonshine":
+        from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+        from moonshine_onnx.transcribe import load_audio
+        model = MoonshineOnnxModel(model_name=cfg.get("stt.model", "tiny"),
+                                   model_precision="float")
+        tok = load_tokenizer()
+        load_ms = (time.perf_counter() - t0) * 1000
 
-    def transcribe(path):
-        segs, _ = model.transcribe(
-            str(path), language=cfg.get("stt.language", "en"),
-            beam_size=1, temperature=0.0,
-            condition_on_previous_text=False, vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 300},
-            no_speech_threshold=0.6)
-        return " ".join(s.text for s in segs).strip()
+        def transcribe(path):
+            return tok.decode_batch(model.generate(load_audio(str(path))))[0].strip()
+    else:
+        from faster_whisper import WhisperModel
+        model = WhisperModel(cfg.get("stt.model"), device=cfg.get("stt.device"),
+                             compute_type=cfg.get("stt.compute_type"))
+        load_ms = (time.perf_counter() - t0) * 1000
+
+        def transcribe(path):
+            segs, _ = model.transcribe(
+                str(path), language=cfg.get("stt.language", "en"),
+                beam_size=1, temperature=0.0,
+                condition_on_previous_text=False, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 300},
+                no_speech_threshold=0.6)
+            return " ".join(s.text for s in segs).strip()
 
     transcribe(prompts[0]["path"])          # warm
 
@@ -439,6 +479,7 @@ def bench_stt_speculative(cfg, prompts, stt_bench):
                 got["text"] = frame.text
 
         svc = SpeculativeWhisperSTTService(
+            engine=cfg.get("stt.engine", "whisper"),
             model=cfg.get("stt.model", "tiny"), device=cfg.get("stt.device", "cpu"),
             compute_type=cfg.get("stt.compute_type", "int8"), sample_rate=sr)
         svc.push_frame = capture
@@ -591,12 +632,12 @@ def main():
     p(f"      {len(prompts)} prompts, "
       f"{sum(x['duration_s'] for x in prompts):.1f}s of audio")
 
-    p("\n[3/7] TTS (piper)")
+    p(f"\n[3/7] TTS ({cfg.get('tts.engine', 'piper')})")
     tts = bench_tts(cfg, args.reps)
     p(f"      synth median {tts['synth_ms']['median']:.0f} ms   "
       f"RTF {tts['realtime_factor']:.3f}x")
 
-    p("\n[4/7] STT (faster-whisper)")
+    p(f"\n[4/7] STT ({cfg.get('stt.engine', 'whisper')})")
     stt = bench_stt(cfg, prompts, args.reps)
     p(f"      median {stt['latency_ms']['median']:.0f} ms   "
       f"RTF {stt['realtime_factor']:.3f}x   "
