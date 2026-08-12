@@ -232,7 +232,10 @@ HTML = r"""<!doctype html>
     <div class="tblwrap"><table id="stackTbl"></table></div>
     <p class="note">Highlighted cells changed from the previous version.
       Same GGUF twice with a different serving path is a different row value on
-      purpose &mdash; the serving path was worth 1.7&thinsp;s in v0.2.</p>
+      purpose &mdash; the serving path was worth 1.7&thinsp;s in v0.2.
+      The v0.4 voice change is audible, not just measurable:
+      <a href="voices.html" style="color:var(--accent)">hear the three TTS
+      candidates</a> on the same sentence, with their measured numbers.</p>
   </div>
 
   <div class="card">

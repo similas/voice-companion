@@ -70,8 +70,9 @@ it is *still* faster than v0.3:
   *entirely* inside the VAD hangover: speculation went 8/8 and the measured
   wait after turn end is **2 ms**. `stt.engine: whisper` switches back.
 - **New voice: Kokoro-82M on the GPU**, 376 ms to first audio at RTF 0.15 —
-  Piper-class speed, dramatically better voice (picked by ear from a published
-  A/B/C bench). It runs as a **sidecar**: the agent venv pins onnxruntime
+  Piper-class speed, dramatically better voice — picked by ear:
+  [**hear all three candidates**](https://similas.github.io/voice-companion/voices.html)
+  say the same sentence, with their measured numbers. It runs as a **sidecar**: the agent venv pins onnxruntime
   1.23.2 CPU (pipecat + Silero VAD) while Kokoro needs the Jetson
   onnxruntime-gpu 1.24 wheel, and the two cannot share a venv — worse, the GPU
   build would silently put VAD on the GPU with a memcpy per 32 ms frame. So
