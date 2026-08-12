@@ -403,10 +403,14 @@ unimportable.
 Reproduce the benchmark and regenerate both charts:
 
 ```bash
-python bench/benchmark.py      --reps 3 --tag v0.1   # measure
-python bench/make_chart.py     --tag v0.1            # static SVG for this README
-python bench/make_dashboard.py --tag v0.1            # interactive docs/index.html
+python bench/benchmark.py      --reps 3 --tag v0.5   # measure this version
+python bench/make_chart.py     --tag v0.5            # static SVG for this README
+python bench/make_dashboard.py                       # docs/index.html — ALL versions
 ```
+
+The dashboard always rebuilds from every `bench/results/*/benchmark.json` it
+finds: one identical benchmark per version, compared side by side, with each
+version's stack shown so it is visible what bought each improvement.
 
 `docs/index.html` is self-contained — data inlined as JSON, no CDN, no build step — so it
 also works opened straight from disk:

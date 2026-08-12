@@ -192,7 +192,11 @@ def system_info(cfg):
                     if cfg.get("stt.engine") == "moonshine" else
                     f"faster-whisper {cfg.get('stt.model')} "
                     f"({cfg.get('stt.compute_type')}, {cfg.get('stt.device')})"),
-            "llm": f"{cfg.get('llm.model')} via {(cfg.get('llm.backend') or 'ollama')}",
+            # Derived from the backend resolution, NOT cfg llm.model — that
+            # field is the Ollama tag and goes stale when llama_server serves
+            # a different GGUF. The v0.4 result file recorded "gemma3:4b-jetson"
+            # for a run that demonstrably measured gemma-4-E2B.
+            "llm": "{2} via {0}".format(*resolve_backend(cfg)),
             "tts": (f"kokoro {cfg.get('tts.kokoro.voice')} (GPU sidecar)"
                     if cfg.get("tts.engine") == "kokoro" else
                     f"piper {cfg.get('tts.voice')}"),

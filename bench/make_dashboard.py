@@ -1,31 +1,49 @@
 #!/usr/bin/env python3
 """
-Generate an interactive latency dashboard from benchmark results.
+Generate the interactive latency dashboard from ALL benchmark results.
+
+One page, every version, side by side. The point is the trajectory: the same
+benchmark runs on every release (bench/benchmark.py — engine-aware since
+v0.4), so each version's numbers are directly comparable, and the per-version
+stack table shows WHAT changed to buy each improvement.
 
 Why a separate page: GitHub sanitizes HTML in READMEs, so an embedded chart can
-only ever be a static image there. A self-contained HTML file served by GitHub
-Pages (or opened locally) can be fully interactive. The README keeps the SVG as a
-fallback and links here.
+only ever be a static image there. This file is deliberately dependency-free —
+no CDN, no build step, all data inlined as JSON — so it works offline, straight
+from disk, and cannot rot when a CDN changes.
 
-The page is deliberately dependency-free — no CDN, no build step, all data inlined
-as JSON — so it works offline and cannot rot when a CDN changes.
+    python bench/make_dashboard.py          -> docs/index.html (all versions)
 
-    python bench/make_dashboard.py --tag v0.1     -> docs/index.html
+Every result directory under bench/results/ that contains a benchmark.json is
+included automatically; nothing is hardcoded per version. Labels come from each
+run's own system.models — the previous generator hardcoded "whisper"/"piper"
+into the detail table, which became a lie the day the engines changed.
 """
 
 import argparse
 import csv
 import json
+import re
 import statistics as st
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def tag_key(tag: str):
+    """Sort order for result dirs: v0.2-step1-llama-server between v0.1 and
+    v0.2 — an intermediate measurement precedes the release it led to."""
+    m = re.match(r"v(\d+)\.(\d+)(.*)", tag)
+    if not m:
+        return (99, 99, 0, tag)
+    major, minor, suffix = int(m.group(1)), int(m.group(2)), m.group(3)
+    return (major, minor, 0 if suffix else 1, suffix)
+
+
 def load_live(csv_path):
-    """Per-turn records from a real conversation."""
+    """Per-turn records from a real conversation (cumulative stamps -> stages)."""
     turns = []
-    if not csv_path.exists():
+    if not csv_path or not csv_path.exists():
         return turns
     with open(csv_path) as f:
         for r in csv.DictReader(f):
@@ -38,14 +56,12 @@ def load_live(csv_path):
                 except ValueError:
                     return None
 
-            stt = num("t_stt_done")
-            vis = num("t_vision_done")
-            ttft = num("t_llm_first_token")
-            tts = num("t_tts_first_audio")
-            play = num("t_audio_playback_start")
+            stt, vis = num("t_stt_done"), num("t_vision_done")
+            ttft, tts, play = (num("t_llm_first_token"),
+                               num("t_tts_first_audio"),
+                               num("t_audio_playback_start"))
             if None in (stt, ttft, tts, play):
                 continue
-            # Convert cumulative stamps into per-stage durations.
             turns.append({
                 "turn": int(r["turn"]),
                 "vision": r.get("vision_used") == "true",
@@ -63,22 +79,87 @@ def load_live(csv_path):
     return turns
 
 
+def load_version(d: Path):
+    """Normalise one result dir into the dashboard's version record.
+
+    The DIRECTORY name is the version, not the json's own "tag" field: result
+    dirs were renamed at release time (v0.2's json says tag=v0.3, step1's says
+    v0.2), so trusting the recorded tag mislabels every bar by one version.
+    """
+    b = json.loads((d / "benchmark.json").read_text())
+    b["tag"] = d.name
+    models = (b.get("system") or {}).get("models") or {}
+    comp = (b.get("composed_ttfa") or {}).get("voice_to_voice")
+    if not comp:
+        return None
+    spec = b.get("stt_speculative") or {}
+    stt, tts, llm = b.get("stt") or {}, b.get("tts") or {}, b.get("llm_text") or {}
+    trig = b.get("vision_trigger") or {}
+    live = load_live(next(iter(sorted(d.glob("live-session-*/live_turns.csv"))),
+                          None))
+
+    def get(dct, *path):
+        for p in path:
+            dct = (dct or {}).get(p)
+        return dct
+
+    label = b["tag"]
+    if "step" in label:                       # v0.2-step1-llama-server
+        label = "·".join(label.split("-")[:2])
+
+    return {
+        "tag": b["tag"],
+        "label": label,
+        "date": (get(b, "system", "timestamp_utc") or "")[:10],
+        "stack": {
+            "STT": models.get("stt", "?"),
+            "LLM": models.get("llm", "?"),
+            "TTS": models.get("tts", "?"),
+        },
+        # The composed voice->voice path. stt here is the wait a person
+        # experiences (speculative wait where the version had it — that is
+        # what benchmark.py composes into ttfa).
+        "bars": {
+            "stt": comp["stt_ms"],
+            "camera": comp.get("camera_capture_ms", 0) or 0,
+            "llm": comp["llm_first_token_ms"],
+            "tts": comp["tts_first_audio_ms"],
+        },
+        "ttfa": comp["ttfa_ms"],
+        "metrics": {
+            "composed TTFA (ms)": comp["ttfa_ms"],
+            "STT wait after turn end (ms)": comp["stt_ms"],
+            "STT raw decode (ms)": get(stt, "latency_ms", "median"),
+            "STT word error rate (%)": round((stt.get("wer_mean") or 0) * 100, 1),
+            "STT exact-match (%)": round((stt.get("exact_match_rate") or 0) * 100),
+            "LLM first token (ms)": get(llm, "ttft_ms", "median"),
+            "LLM throughput (tok/s)": llm.get("tokens_per_s"),
+            "TTS first audio (ms)": get(tts, "synth_ms", "median"),
+            "TTS realtime factor": tts.get("realtime_factor"),
+            "vision trigger (correct)": (f"{trig.get('correct')}/{trig.get('cases')}"
+                                         if trig else None),
+        },
+        "speculative": bool(spec),
+        "live": live,
+    }
+
+
 HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>voice-companion &middot; latency __TAG__</title>
+<title>voice-companion &middot; latency evolution</title>
 <style>
   :root{
     --bg:#ffffff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328;
-    --dim:#656d76; --accent:#0969da;
+    --dim:#656d76; --accent:#0969da; --hl:#fff8c5; --hlline:#d4a72c;
     --stt:#3f8f63; --camera:#b8901f; --llm:#3f6fb5; --tts:#9c4f93; --play:#7d8590;
   }
   @media (prefers-color-scheme:dark){
     :root{
       --bg:#0d1117; --panel:#161b22; --line:#30363d; --ink:#e6edf3;
-      --dim:#8b949e; --accent:#4493f8;
+      --dim:#8b949e; --accent:#4493f8; --hl:#3a3520; --hlline:#d4a72c;
       --stt:#57ab7a; --camera:#d4a72c; --llm:#539bf5; --tts:#c46fb8; --play:#768390;
     }
   }
@@ -86,7 +167,7 @@ HTML = r"""<!doctype html>
   body{margin:0;background:var(--bg);color:var(--ink);
     font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     padding:28px 20px 60px}
-  .wrap{max-width:1040px;margin:0 auto}
+  .wrap{max-width:1060px;margin:0 auto}
   h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
   .sub{color:var(--dim);font-size:13.5px;margin:0 0 22px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
@@ -108,49 +189,70 @@ HTML = r"""<!doctype html>
   .seg:hover{opacity:.78}
   .axis{fill:var(--dim);font-size:11px}
   .glab{fill:var(--ink);font-size:13px;font-weight:600}
+  .gsub{fill:var(--dim);font-size:10.5px}
   .gtot{fill:var(--ink);font-size:12.5px;font-weight:600}
+  .gdelta{font-size:10.5px}
   .grid{stroke:var(--line);stroke-width:1}
   #tip{position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;
     background:var(--ink);color:var(--bg);padding:7px 10px;border-radius:7px;
-    font-size:12.5px;max-width:330px;z-index:9;line-height:1.45}
+    font-size:12.5px;max-width:340px;z-index:9;line-height:1.45}
   #tip b{font-weight:600}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  .tblwrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);
+    vertical-align:top}
   th{color:var(--dim);font-weight:600;font-size:11.5px;text-transform:uppercase;
-    letter-spacing:.05em}
-  td.n{text-align:right;font-variant-numeric:tabular-nums}
+    letter-spacing:.05em;white-space:nowrap}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  td.best{font-weight:700}
+  td.changed{background:var(--hl);border-left:2px solid var(--hlline)}
+  td.stackcell{font-size:12.5px;max-width:180px}
   .note{color:var(--dim);font-size:12.5px;margin-top:12px}
-  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-  .kpi{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
-  .kpi .v{font-size:21px;font-weight:600;font-variant-numeric:tabular-nums}
-  .kpi .k{color:var(--dim);font-size:11.5px;text-transform:uppercase;
-    letter-spacing:.05em;margin-top:2px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Time to first audio &mdash; <span id="tag"></span></h1>
+  <h1>Time to first audio &mdash; every version</h1>
   <p class="sub" id="sysline"></p>
 
   <div class="card">
-    <h2>End to end</h2>
-    <div class="tabs" role="tablist" id="modeTabs"></div>
-    <svg id="mainChart" role="img" aria-label="TTFA stage breakdown"></svg>
+    <h2>Voice &rarr; voice, composed from measured stage medians</h2>
+    <svg id="evoChart" role="img" aria-label="TTFA per version"></svg>
     <div class="legend" id="legend"></div>
-    <p class="note" id="modeNote"></p>
+    <p class="note">The same benchmark (<code>bench/benchmark.py</code>) runs on
+      every release: 8 spoken prompts, 3 reps, machine to itself. STT is the
+      wait <em>after</em> the turn ends &mdash; speculative decoding (v0.2+)
+      does the work inside the VAD hangover, which is why the green segment
+      almost disappears. Hover any segment; click a legend entry to hide a
+      stage.</p>
   </div>
 
   <div class="card">
-    <h2>Every turn of the live conversation</h2>
+    <h2>The stack, per version &mdash; what bought each improvement</h2>
+    <div class="tblwrap"><table id="stackTbl"></table></div>
+    <p class="note">Highlighted cells changed from the previous version.
+      Same GGUF twice with a different serving path is a different row value on
+      purpose &mdash; the serving path was worth 1.7&thinsp;s in v0.2.</p>
+  </div>
+
+  <div class="card">
+    <h2>Quality &amp; throughput, per version</h2>
+    <div class="tblwrap"><table id="metricTbl"></table></div>
+    <p class="note">Bold = best. WER is measured against Piper-synthesised
+      prompts &mdash; a reproducible proxy, not a claim about any human accent;
+      per-prompt transcripts live in each version&rsquo;s
+      <code>benchmark.json</code> under <code>stt.examples</code>.</p>
+  </div>
+
+  <div class="card">
+    <h2>Live conversation, per turn</h2>
+    <div class="tabs" role="tablist" id="liveTabs"></div>
     <svg id="turnChart" role="img" aria-label="Per-turn latency"></svg>
-    <p class="note">Hover a bar for what was said and what came back. Taller
-      bars with a gold segment are turns that used the camera.</p>
-  </div>
-
-  <div class="card">
-    <h2>Component detail (benchmark)</h2>
-    <div class="kpis" id="kpis"></div>
-    <table id="detail"></table>
+    <p class="note" id="liveNote">Real recorded conversations &mdash; STT, TTS,
+      the camera thread and the model competing for 6 cores. Hover a bar for
+      what was said. Versions without a bar set have no recorded session yet;
+      composed numbers above are the hardware floor, these are the truth in a
+      room.</p>
   </div>
 </div>
 <div id="tip"></div>
@@ -159,7 +261,7 @@ HTML = r"""<!doctype html>
 const DATA = __DATA__;
 
 const STAGES = [
-  {k:"stt",    label:"STT",             css:"--stt"},
+  {k:"stt",    label:"STT wait",        css:"--stt"},
   {k:"camera", label:"camera capture",  css:"--camera"},
   {k:"llm",    label:"LLM first token", css:"--llm"},
   {k:"tts",    label:"TTS first audio", css:"--tts"},
@@ -167,10 +269,11 @@ const STAGES = [
 ];
 const colour = k => getComputedStyle(document.documentElement)
   .getPropertyValue(STAGES.find(s=>s.k===k).css).trim();
+const STAGE_ENGINE = {stt:"STT", llm:"LLM", tts:"TTS"};
 
 const off = new Set();
-let mode = "benchmark";
 const tip = document.getElementById("tip");
+let liveTag = (DATA.versions.filter(v=>v.live.length).slice(-1)[0]||{}).tag;
 
 function showTip(html, e){
   tip.innerHTML = html;
@@ -183,54 +286,57 @@ function showTip(html, e){
   tip.style.top  = y + "px";
 }
 const hideTip = () => { tip.style.opacity = 0; };
-
 function el(tag, attrs, kids){
   const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const k in (attrs||{})) n.setAttribute(k, attrs[k]);
   (kids||[]).forEach(c => n.appendChild(c));
   return n;
 }
-const txt = (s) => document.createTextNode(s);
+const txt = s => document.createTextNode(s);
+const esc = s => (s||"").replace(/[<>&]/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
 
-// ---- main stacked chart -------------------------------------------------
-function drawMain(){
-  const svg = document.getElementById("mainChart");
-  if (!svg) return;
+// ---- evolution chart: one stacked bar per version -----------------------
+function drawEvo(){
+  const svg = document.getElementById("evoChart");
   svg.textContent = "";
-  const rows = DATA.modes[mode].rows;
-  const W = 1000, L = 190, R = 108, barH = 30, rowH = 62, top = 26;
+  const rows = DATA.versions;
+  const W = 1000, L = 120, R = 150, barH = 26, rowH = 56, top = 26;
   const plot = W - L - R;
   const shown = r => STAGES.filter(s=>!off.has(s.k))
-                           .reduce((a,s)=>a+(r.stages[s.k]||0),0);
+                           .reduce((a,s)=>a+(r.bars[s.k]||0),0);
   const peak = Math.max(...rows.map(shown), 1);
-  const axisMax = Math.ceil(peak/1000)*1000 || 1000;
+  const step = peak > 2500 ? 1000 : 250;
+  const axisMax = Math.ceil(peak/step)*step || step;
   const sc = plot/axisMax;
   const H = top + rows.length*rowH + 44;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
 
-  for (let ms=0; ms<=axisMax; ms+=1000){
+  for (let ms=0; ms<=axisMax; ms+=step){
     const x = L + ms*sc;
     svg.appendChild(el("line",{x1:x,y1:top-8,x2:x,y2:H-34,class:"grid",
       "stroke-opacity":ms?0.35:0.7}));
     svg.appendChild(el("text",{x:x,y:H-14,class:"axis","text-anchor":"middle"},
-      [txt((ms/1000)+"s")]));
+      [txt(ms>=1000 ? (ms/1000)+"s" : ms+"ms")]));
   }
 
   rows.forEach((r,i)=>{
     const y = top + i*rowH;
-    svg.appendChild(el("text",{x:0,y:y+barH*0.7,class:"glab"},[txt(r.label)]));
+    svg.appendChild(el("text",{x:0,y:y+barH*0.55,class:"glab"},[txt(r.label)]));
+    svg.appendChild(el("text",{x:0,y:y+barH*0.55+13,class:"gsub"},[txt(r.date)]));
     let x = L;
     STAGES.forEach(s=>{
       if (off.has(s.k)) return;
-      const v = r.stages[s.k]||0;
+      const v = r.bars[s.k]||0;
       if (!v) return;
       const w = v*sc;
-      const rect = el("rect",{x:x,y:y,width:Math.max(w,1),height:barH,
+      const rect = el("rect",{x:x,y:y,width:Math.max(w,1.5),height:barH,
         fill:colour(s.k),rx:3,class:"seg"});
       const denom = shown(r) || 1;
-      const share = (v/denom*100).toFixed(0);
+      const eng = STAGE_ENGINE[s.k] ? `<br><span style="opacity:.75">${
+        esc(r.stack[STAGE_ENGINE[s.k]])}</span>` : "";
       rect.addEventListener("mousemove", e=>showTip(
-        `<b>${s.label}</b><br>${v.toFixed(0)} ms &middot; ${share}% of this path`, e));
+        `<b>${r.label} &middot; ${s.label}</b><br>${v.toFixed(0)} ms &middot; ` +
+        `${(v/denom*100).toFixed(0)}% of this bar${eng}`, e));
       rect.addEventListener("mouseleave", hideTip);
       svg.appendChild(rect);
       if (w > 52) svg.appendChild(el("text",{x:x+w/2,y:y+barH*0.66,
@@ -238,20 +344,87 @@ function drawMain(){
         "fill-opacity":"0.85"},[txt(v.toFixed(0))]));
       x += w;
     });
-    svg.appendChild(el("text",{x:x+10,y:y+barH*0.7,class:"gtot"},
-      [txt((shown(r)/1000).toFixed(2)+"s")]));
+    const tot = shown(r);
+    svg.appendChild(el("text",{x:x+10,y:y+barH*0.55,class:"gtot"},
+      [txt((tot/1000).toFixed(2)+"s")]));
+    if (i > 0){
+      const prev = shown(rows[i-1]);
+      const d = (tot-prev)/prev*100;
+      const better = d < 0;
+      svg.appendChild(el("text",{x:x+10,y:y+barH*0.55+14,class:"gdelta",
+        fill: better ? "var(--stt)" : "var(--tts)"},
+        [txt((better?"":"+")+d.toFixed(0)+"% vs "+rows[i-1].label)]));
+    }
   });
-  document.getElementById("modeNote").textContent = DATA.modes[mode].note;
 }
 
-// ---- per-turn chart ----------------------------------------------------
+// ---- stack table ---------------------------------------------------------
+function drawStack(){
+  const t = document.getElementById("stackTbl");
+  const vs = DATA.versions;
+  const roles = ["STT","LLM","TTS"];
+  let html = "<thead><tr><th></th>" +
+    vs.map(v=>`<th>${v.label}</th>`).join("") + "</tr></thead><tbody>";
+  roles.forEach(role=>{
+    html += `<tr><th>${role}</th>`;
+    vs.forEach((v,i)=>{
+      const cur = v.stack[role], prev = i ? vs[i-1].stack[role] : cur;
+      html += `<td class="stackcell${cur!==prev?" changed":""}">${esc(cur)}</td>`;
+    });
+    html += "</tr>";
+  });
+  html += "<tr><th>composed TTFA</th>" + vs.map((v,i)=>{
+    const best = Math.min(...vs.map(x=>x.ttfa));
+    return `<td class="n${v.ttfa===best?" best":""}">${(v.ttfa/1000).toFixed(2)}s</td>`;
+  }).join("") + "</tr></tbody>";
+  t.innerHTML = html;
+}
+
+// ---- metric evolution table ----------------------------------------------
+const LOWER_IS_BETTER = k => !/tok\/s|exact|trigger/.test(k);
+function drawMetrics(){
+  const t = document.getElementById("metricTbl");
+  const vs = DATA.versions;
+  const keys = Object.keys(vs[vs.length-1].metrics);
+  let html = "<thead><tr><th>metric</th>" +
+    vs.map(v=>`<th class="n">${v.label}</th>`).join("") + "</tr></thead><tbody>";
+  keys.forEach(k=>{
+    const vals = vs.map(v=>v.metrics[k]);
+    const nums = vals.filter(x=>typeof x === "number");
+    const best = nums.length ? (LOWER_IS_BETTER(k) ? Math.min(...nums)
+                                                   : Math.max(...nums)) : null;
+    html += `<tr><td>${k}</td>` + vals.map(x=>{
+      if (x === null || x === undefined) return "<td class='n'>—</td>";
+      const b = (typeof x === "number" && x === best) ? " best" : "";
+      return `<td class="n${b}">${typeof x === "number"
+        ? (Math.abs(x) >= 100 ? x.toFixed(0) : x) : x}</td>`;
+    }).join("") + "</tr>";
+  });
+  t.innerHTML = html + "</tbody>";
+}
+
+// ---- per-turn live chart with version tabs --------------------------------
+function drawLiveTabs(){
+  const box = document.getElementById("liveTabs");
+  box.textContent = "";
+  DATA.versions.filter(v=>v.live.length).forEach(v=>{
+    const b = document.createElement("button");
+    b.className = "tab";
+    b.textContent = `${v.label} (${v.live.length} turns)`;
+    b.setAttribute("role","tab");
+    b.setAttribute("aria-selected", v.tag===liveTag ? "true" : "false");
+    b.onclick = ()=>{ liveTag = v.tag; render(); };
+    box.appendChild(b);
+  });
+}
+
 function drawTurns(){
   const svg = document.getElementById("turnChart");
-  if (!svg) return;
   svg.textContent = "";
-  const turns = DATA.live;
-  if (!svg) return;
+  const v = DATA.versions.find(x=>x.tag===liveTag);
+  const turns = v ? v.live : [];
   if (!turns.length){ svg.style.display = "none"; return; }
+  svg.style.display = "";
   const W = 1000, L = 40, B = 46, top = 16, H = 300;
   const plot = W - L - 16, ph = H - top - B;
   const peak = Math.max(...turns.map(t=>t.total));
@@ -267,21 +440,20 @@ function drawTurns(){
     svg.appendChild(el("text",{x:L-8,y:y+4,class:"axis","text-anchor":"end"},
       [txt((ms/1000)+"s")]));
   }
-
   turns.forEach((t,i)=>{
     const cx = L + 12 + i*(plot/turns.length);
     let yTop = top + ph;
     STAGES.forEach(s=>{
       if (off.has(s.k)) return;
-      const v = t.stages[s.k]||0;
-      if (!v) return;
-      const h = v*sc;
+      const val = t.stages[s.k]||0;
+      if (!val) return;
+      const h = val*sc;
       yTop -= h;
       const rect = el("rect",{x:cx,y:yTop,width:bw,height:Math.max(h,1),
         fill:colour(s.k),class:"seg",rx:2});
       rect.addEventListener("mousemove", e=>showTip(
         `<b>turn ${t.turn}</b>${t.vision?' &middot; used camera':''}<br>` +
-        `<b>${s.label}: ${v.toFixed(0)} ms</b> of ${(t.total/1000).toFixed(2)}s<br>` +
+        `<b>${s.label}: ${val.toFixed(0)} ms</b> of ${(t.total/1000).toFixed(2)}s<br>` +
         `<span style="opacity:.75">you:</span> ${esc(t.transcript)}<br>` +
         `<span style="opacity:.75">bot:</span> ${esc(t.reply)}`, e));
       rect.addEventListener("mouseleave", hideTip);
@@ -293,9 +465,8 @@ function drawTurns(){
       "text-anchor":"middle","font-size":"10"},[txt("cam")]));
   });
 }
-const esc = s => (s||"").replace(/[<>&]/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
 
-// ---- legend, tabs, tables ---------------------------------------------
+// ---- legend ---------------------------------------------------------------
 function drawLegend(){
   const box = document.getElementById("legend");
   box.textContent = "";
@@ -310,39 +481,9 @@ function drawLegend(){
   });
 }
 
-function drawTabs(){
-  const box = document.getElementById("modeTabs");
-  box.textContent = "";
-  Object.keys(DATA.modes).forEach(k=>{
-    const b = document.createElement("button");
-    b.className = "tab"; b.textContent = DATA.modes[k].label;
-    b.setAttribute("role","tab");
-    b.setAttribute("aria-selected", k===mode ? "true" : "false");
-    b.onclick = ()=>{ mode = k; render(); };
-    box.appendChild(b);
-  });
-}
-
-function drawDetail(){
-  const k = document.getElementById("kpis");
-  k.innerHTML = DATA.kpis.map(x=>
-    `<div class="kpi"><div class="v">${x.value}</div><div class="k">${x.key}</div></div>`
-  ).join("");
-  const t = document.getElementById("detail");
-  t.innerHTML =
-    "<thead><tr><th>stage</th><th class='n'>min</th><th class='n'>median</th>" +
-    "<th class='n'>p90</th><th class='n'>max</th><th class='n'>n</th></tr></thead><tbody>" +
-    DATA.detail.map(r=>`<tr><td>${r.stage}</td><td class='n'>${r.min}</td>` +
-      `<td class='n'><b>${r.median}</b></td><td class='n'>${r.p90}</td>` +
-      `<td class='n'>${r.max}</td><td class='n'>${r.n}</td></tr>`).join("") +
-    "</tbody>";
-}
-
-function render(){ drawTabs(); drawMain(); drawTurns(); drawLegend(); }
-
-document.getElementById("tag").textContent = DATA.tag;
+function render(){ drawEvo(); drawLegend(); drawStack(); drawMetrics();
+                   drawLiveTabs(); drawTurns(); }
 document.getElementById("sysline").textContent = DATA.sysline;
-drawDetail();
 render();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 </script>
@@ -353,107 +494,46 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tag", default="v0.1")
+    ap.add_argument("--tag", default=None,
+                    help="ignored (kept for muscle memory) — the dashboard "
+                         "always builds every version")
     args = ap.parse_args()
+    if args.tag:
+        print(f"  note: --tag is obsolete; building ALL versions")
 
-    d = ROOT / "bench" / "results" / args.tag
-    b = json.loads((d / "benchmark.json").read_text())
-    live = load_live(next(iter(sorted(d.glob("live-session-*/live_turns.csv"))), d / "no-live-session"))
+    dirs = sorted((p for p in (ROOT / "bench" / "results").iterdir()
+                   if (p / "benchmark.json").exists()),
+                  key=lambda p: tag_key(p.name))
+    versions = [v for v in (load_version(d) for d in dirs) if v]
+    if not versions:
+        raise SystemExit("no benchmark.json found under bench/results/")
 
-    comp = b["composed_ttfa"]
-    v2v, vi2v = comp.get("voice_to_voice"), comp.get("voice_image_to_voice")
+    # One recording, one owner. v0.1's live session file was COPIED into the
+    # v0.2 and step1 result dirs (identical md5), so without this the same 16
+    # turns would appear under three version tabs and read as three separate
+    # recordings. Each distinct session belongs to the earliest version that
+    # carries it.
+    seen = set()
+    for v in versions:
+        key = json.dumps(v["live"], sort_keys=True)
+        if v["live"] and key in seen:
+            v["live"] = []
+        seen.add(key)
 
-    def bench_row(label, c):
-        return {"label": label, "stages": {
-            "stt": c["stt_ms"],
-            "camera": c.get("camera_capture_ms", 0),
-            "llm": c["llm_first_token_ms"],
-            "tts": c["tts_first_audio_ms"],
-            "play": 0}}
+    newest = versions[-1]
+    sysline = (f"Jetson Orin Nano Super (8 GB), everything on-device · "
+               f"latest: {newest['label']} — {newest['stack']['STT']} · "
+               f"{newest['stack']['LLM']} · {newest['stack']['TTS']}")
 
-    bench_rows = [r for r in [
-        bench_row("voice → voice", v2v) if v2v else None,
-        bench_row("voice + image → voice", vi2v) if vi2v else None] if r]
-
-    def live_row(label, sel):
-        rows = [t for t in live if sel(t)]
-        if not rows:
-            return None
-        med = lambda k: round(st.median([t["stages"][k] for t in rows]), 1)  # noqa: E731
-        return {"label": f"{label}  (n={len(rows)})", "stages": {
-            "stt": med("stt"), "camera": med("camera"), "llm": med("llm"),
-            "tts": med("tts"), "play": med("play")}}
-
-    live_rows = [r for r in [
-        live_row("voice → voice", lambda t: not t["vision"]),
-        live_row("voice + image → voice", lambda t: t["vision"])] if r]
-
-    def row(stage, s):
-        if not s:
-            return None
-        return {"stage": stage, "min": s["min"], "median": s["median"],
-                "p90": s["p90"], "max": s["max"], "n": s["n"]}
-
-    detail = [r for r in [
-        row("STT (whisper tiny)", b["stt"]["latency_ms"]),
-        row("LLM first token — text", b["llm_text"]["ttft_ms"]),
-        row("LLM first token — vision",
-            (b.get("llm_vision") or {}).get("ttft_ms")),
-        row("TTS synthesis (piper)", b["tts"]["synth_ms"]),
-        row("camera capture + encode",
-            (b.get("camera") or {}).get("capture_ms")),
-        row("camera frame age", (b.get("camera") or {}).get("frame_age_ms")),
-    ] if r]
-
-    kpis = [
-        {"key": "voice → voice", "value": f"{v2v['ttfa_ms']/1000:.2f}s"} if v2v else None,
-        {"key": "voice+image → voice",
-         "value": f"{vi2v['ttfa_ms']/1000:.2f}s"} if vi2v else None,
-        {"key": "LLM throughput", "value": f"{b['llm_text']['tokens_per_s']} tok/s"},
-        {"key": "STT realtime factor", "value": f"{b['stt']['realtime_factor']}×"},
-        {"key": "TTS realtime factor", "value": f"{b['tts']['realtime_factor']}×"},
-        {"key": "vision triggers",
-         "value": f"{b['vision_trigger']['correct']}/{b['vision_trigger']['cases']}"},
-    ]
-    kpis = [k for k in kpis if k]
-
-    sysinfo = b["system"]
-    sysline = (f"{sysinfo['device']} · {sysinfo['cores']} cores · "
-               f"{sysinfo['models']['stt']} · {sysinfo['models']['llm']} · "
-               f"{sysinfo['models']['tts']} · measured "
-               f"{sysinfo['timestamp_utc'][:10]}")
-
-    payload = {
-        "tag": args.tag,
-        "sysline": sysline,
-        "modes": {
-            "benchmark": {
-                "label": "Benchmark (isolated)",
-                "rows": bench_rows,
-                "note": "Each stage measured on its own, nothing else running. "
-                        "This is the floor the hardware can do.",
-            },
-            "live": {
-                "label": "Live conversation (median)",
-                "rows": live_rows,
-                "note": "Medians from a real recorded conversation, where STT, TTS, "
-                        "the camera thread and the model all compete for 6 CPU "
-                        "cores. The gap versus the benchmark is contention.",
-            },
-        },
-        "live": live,
-        "detail": detail,
-        "kpis": kpis,
-    }
-
-    outdir = ROOT / "docs"
-    outdir.mkdir(exist_ok=True)
-    html = HTML.replace("__DATA__", json.dumps(payload)).replace("__TAG__", args.tag)
-    out = outdir / "index.html"
+    payload = {"versions": versions, "sysline": sysline}
+    out = ROOT / "docs" / "index.html"
+    out.parent.mkdir(exist_ok=True)
+    html = HTML.replace("__DATA__", json.dumps(payload))
     out.write_text(html)
     print(f"  wrote {out.relative_to(ROOT)}  ({len(html)//1024} KB, self-contained)")
-    print(f"  modes: benchmark ({len(bench_rows)} rows), live ({len(live_rows)} rows)")
-    print(f"  per-turn bars: {len(live)}")
+    for v in versions:
+        print(f"    {v['label']:12} ttfa {v['ttfa']:7.1f} ms   "
+              f"live turns: {len(v['live'])}")
 
 
 if __name__ == "__main__":
