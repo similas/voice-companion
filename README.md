@@ -21,12 +21,15 @@ mic ──▶ VAD ──▶ STT ──▶ [camera, only when asked] ──▶ VL
 
 | | v0.1 | v0.2 | v0.3 | **v0.4** |
 |---|---|---|---|---|
-| composed TTFA (voice→voice) | 2891 ms | 613 ms | 545 ms | **463 ms** |
+| composed TTFA (voice→voice) | 2891 ms | 613 ms | 545 ms | **464 ms** |
 | STT wait after turn end | 736 ms | 202 ms | 189 ms | **2 ms** |
-| STT word error rate | 11.3% | 9.96% | ~10% | **1.4%** |
-| LLM first token | 1855 ms | 158 ms | 85 ms | **86 ms** |
-| generation | 15.1 tok/s | 17.5 tok/s | 30.4 tok/s | **31.1 tok/s** |
-| live TTFA, real room | — | not recorded | 2784 ms | not yet recorded |
+| STT word error rate | 11.3% | 9.96% | ~10% | **1.4%**† |
+| LLM first token | 1855 ms | 158 ms | 85 ms | **85 ms** |
+| generation | 15.1 tok/s | 17.5 tok/s | 30.4 tok/s | **31.0 tok/s** |
+| live TTFA, real room | — | not recorded | 2784 ms (22 turns) | **2185 ms** (13 turns) |
+
+† On the synthetic bench. The real room told a different story — see the
+postscript below.
 
 The composed and live numbers are both real and they are not the same number.
 Composed is what the stages cost with the machine to themselves; live adds VAD
@@ -61,14 +64,15 @@ it is *still* faster than v0.3:
   with the tool role scored 13/14. Prompts live in `prompts/` as two complete
   tested files, not a persona + addendum splice, and nothing spoken is
   hardcoded.
-- **New ear: Moonshine tiny** (ONNX, float, CPU) replaces faster-whisper tiny.
-  Measured on identical Piper-voiced prompts: median decode **1017 → 114 ms**
-  and WER **16.7% → 1.4%** — 7× faster and far more accurate, simultaneously.
+- **New ear: Moonshine base** (ONNX, float, CPU) replaces faster-whisper tiny.
+  Measured on identical Piper-voiced prompts: median decode **1017 → 190 ms**
+  and WER **16.7% → 1.4%** — 5× faster and far more accurate, simultaneously.
   No 30 s padding window, so a 3 s utterance costs 3 s of encoder. It
   transcribes silence and noise as `''` (verified), where whisper invented
-  sentences and needed three stacked filters. At 114 ms the decode now hides
-  *entirely* inside the VAD hangover: speculation went 8/8 and the measured
-  wait after turn end is **2 ms**. `stt.engine: whisper` switches back.
+  sentences and needed three stacked filters. The decode hides *entirely*
+  inside the VAD hangover: speculation went 8/8 and the measured wait after
+  turn end is **2 ms**. `stt.engine: whisper` switches back. (Why base and
+  not the even-faster tiny: the postscript.)
 - **New voice: Kokoro-82M on the GPU**, 376 ms to first audio at RTF 0.15 —
   Piper-class speed, dramatically better voice — picked by ear:
   [**hear all three candidates**](https://similas.github.io/voice-companion/voices.html)
@@ -91,6 +95,33 @@ it is *still* faster than v0.3:
   config (`.whoop_tokens.json`); and a Ctrl-Z'd `run.sh` in a forgotten
   terminal holds the singleton flock forever — a suspended shell can't die —
   so `stop.sh` now clears lock holders with `fuser -k`.
+
+### Postscript — the ear, one evening later
+
+v0.4 originally shipped **moonshine tiny** on the strength of the bench above
+(114 ms, WER 1.4%). The first real conversation that evening found it **deaf**:
+utterances at healthy speech levels (rms 0.03) transcribed as `''`, and "hey
+Roomi" landed 1 time in 5. The bench WER was true and useless — measured on
+clean synthesized prompts, it said nothing about far-field reverberant speech.
+Every utterance was on disk (`stt.save_audio`), so the dispute was settled by
+decoding the same recordings three ways:
+
+| engine | tonight's real audio | live decode |
+|---|---|---|
+| moonshine tiny | `''` on 3 of 3 "bye Roomi"s | 105–270 ms |
+| whisper tiny | heard everything, correctly | **1.0–4.4 s under load** |
+| **moonshine base** | **heard everything above TV-murmur, never `''`** | **141–430 ms** |
+
+So: **base**, and the composed numbers above were re-measured with it. The
+other half of the wake failure was the matcher itself — the ASR hears the name
+as *Ruby, Rooney, loomy, roommate*, and the original shape regex
+(`^b?r[ou]+m…`) rejected exactly those. The widened shape in `app/wake.py`
+accepts every spelling observed across ~20 real attempts (both engines) and
+still ignores "a robot appeared on screen"; 24/24 on a test built from the
+night's actual transcripts. Two lessons, at the cost of one evening:
+**synthetic-audio WER is a floor test, not a room test**, and **match what the
+ASR actually writes, not what the dictionary wishes it wrote** — now with the
+regex to prove it.
 
 ### What v0.3 actually is
 
@@ -229,7 +260,7 @@ not help because Gemma 3 resizes to a fixed 896×896 internally.
 |---|---|---|
 | Orchestration | **Pipecat 0.0.108** | pinned — 1.x needs `onnxruntime~=1.24.3`, which has no aarch64 wheel |
 | Inference server | **llama.cpp `llama-server`**, run directly | 91% lower TTFT than Ollama; `tools/llama_server.sh` |
-| STT | **Moonshine `tiny`**, float ONNX, CPU | 114 ms decode, WER 1.4%; speculative during the VAD hangover. `stt.engine: whisper` for the old ear |
+| STT | **Moonshine `base`**, float ONNX, CPU | 190 ms decode, WER 1.4%; speculative during the VAD hangover; `tiny` is deaf to far-field speech (see postscript) |
 | Brain (text + vision + tools) | **gemma-4-E2B**, QAT q4_0 | native tool calling; `--reasoning off` is load-bearing; 100% GPU |
 | TTS | **Kokoro-82M `af_heart`**, GPU sidecar | 376 ms first audio, RTF 0.15; `tools/kokoro_server.sh`; falls back to Piper |
 | Wake word | **transcript-shape matching** in the STT service | "hey Roomi" / "bye Roomi", chime-acknowledged; `app/wake.py` |

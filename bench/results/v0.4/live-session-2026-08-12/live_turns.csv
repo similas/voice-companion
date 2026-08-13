@@ -1,0 +1,14 @@
+turn,wall_clock,t_user_stopped_speaking,t_stt_done,t_vision_done,t_llm_first_token,t_llm_done,t_tts_first_audio,t_audio_playback_start,total_latency,vision_used,transcript_chars,transcript,reply_tokens,reply_chars,reply,interrupted
+1,2026-08-12T19:55:55.644,0.0,197.1,,3598.3,4724.8,4992.1,5025.4,5025.4,false,20,What is my recovery?,20,80,Your recovery is at 54% with an HRV of 60 ms and a resting heart rate of 53 bpm.,false
+2,2026-08-12T19:56:12.748,0.0,337.5,,2044.6,3500.2,2949.0,2961.1,2961.1,false,34,Okay good and how about my strain?,25,101,"Your strain for the day is 13.0 of 21, with 1870 calories burned and an average heart rate of 65 bpm.",false
+3,2026-08-12T19:56:29.054,0.0,266.1,,1156.4,1932.1,1893.3,1904.4,1904.4,false,26,"Okay amazing, how are you?",11,45,I am functioning well. What can I do for you?,false
+4,2026-08-12T19:56:37.302,0.0,242.6,,1043.7,2206.0,1815.2,1824.1,1824.1,false,27,Tell me a really funny joke,22,89,I can tell you a joke. Why don't scientists trust atoms? Because they make up everything.,false
+5,2026-08-12T19:56:46.935,0.0,172.7,,1001.6,1508.7,1973.6,1990.3,1990.3,false,15,And here we pee,12,46,"I am sorry, but I cannot fulfill that request.",false
+6,2026-08-12T19:56:56.097,0.0,268.1,,1083.7,2416.2,2021.7,2033.7,2033.7,false,33,Can you repeat your previous job?,28,111,"I am a friendly companion in the room. I use tools like the lamp, Spotify, and your WHOOP data to help you out.",false
+7,2026-08-12T19:57:08.198,0.0,188.0,,1044.7,2026.4,1997.8,2011.7,2011.7,false,14,Tell me a joke,19,76,Why did the scarecrow win an award? Because he was outstanding in his field.,false
+8,2026-08-12T19:57:16.723,0.0,178.5,,1689.0,2815.6,2513.5,2523.5,2523.5,false,15,Tom your rhythm,27,107,I don't have a rhythm to tell you. I can control the lamp or play music if you want something to listen to.,false
+9,2026-08-12T19:57:35.609,0.0,194.4,,1583.5,2582.6,2558.5,2577.9,2577.9,false,15,Tell me a rebel,20,81,I can play some music for you if you'd like. What kind of music do you feel like?,false
+10,2026-08-12T19:57:45.570,0.0,224.2,,1516.7,1810.2,2175.2,2185.3,2185.3,false,16,Tell me a riddle,8,31,What has an eye but cannot see?,false
+11,2026-08-12T19:57:57.555,0.0,173.0,,1440.8,1667.5,2005.3,2011.2,2011.2,false,12,I don't know,4,14,It's a needle.,false
+12,2026-08-12T19:58:10.386,0.0,389.5,,1651.7,2672.9,2651.5,2676.5,2676.5,false,46,Can you tell me a poem with needle and noodle?,21,84,I don't have a poem with a needle and noodle. I can play some music for you instead.,false
+13,2026-08-12T19:58:23.914,0.0,440.7,,1712.0,2370.9,2970.0,3004.6,3004.6,false,50,"No, generate a poem for me with noodle and needle.",20,80,"I can't generate poems, but I can control the lamp or play something on Spotify.",false

@@ -42,9 +42,11 @@ audio:
   input_device: pulse       # -> PipeWire default source
   output_device: pulse      # -> PipeWire default sink
 
-  # Forced at startup so a speaker that remembers 100% from a previous session
-  # cannot blast you. Raise/lower to taste.
-  output_volume: 70
+  # 100, by explicit request (2026-08-12): the sink stays at full scale and
+  # loudness is adjusted on the speaker itself. The startup forcing still
+  # matters — it makes the software volume PREDICTABLE, so the knob on the
+  # device is the only variable.
+  output_volume: 100
 
   # Output at the sink's native rate to avoid a second resample. Both the ALbose
   # (A2DP) and the Jieli USB speaker run at 48 kHz, so this suits either.
@@ -155,13 +157,24 @@ stt:
   #              (180 ms, WER 16%) so float is deliberate.
   #   whisper    faster-whisper / CTranslate2, the v0.1-v0.3 engine. Keeps
   #              working with the same settings below.
+  # THE EAR SAGA, one evening, 2026-08-12 — recorded because the answer moved
+  # three times and each move was measured (audio in logs/turns/):
+  #   moonshine tiny  won the clean bench (114 ms, WER 1.4% on Piper-voiced
+  #                   prompts) then went DEAF in the real room — transcribed
+  #                   '' for far-field speech at healthy levels (rms 0.03).
+  #   whisper tiny    heard the room correctly but live decodes ran 1.0-4.4 s
+  #                   under contention (bench said 750 ms), and the user
+  #                   measured wake at 1-in-5.
+  #   moonshine base  heard EVERY tonight's utterance above rms ~0.02, never
+  #                   returned '', decoded in 141-430 ms live — hidden by the
+  #                   0.8 s hangover, so replies still feel instant.
+  # Wake reliability was HALF a matcher bug: the ASR hears the name as Ruby /
+  # Rooney / loomy / roommate, and the old shape regex rejected those. Fixed
+  # in app/wake.py; synthetic-audio WER is a floor test, not a room test.
   engine: moonshine
-  # MEASURED on this device with a 3.58 s utterance (short-form conversational
-  # speech, which is all this ever sees):
-  #   whisper tiny  853 ms  RTF 0.24x  -> "Hello there, what is 2 plus 2? Please answer briefly."
-  #   whisper base 1369 ms  RTF 0.38x  -> "Hello there, what is 2 plus 2, please answer briefly."
-  # Both engines come in tiny/base; tiny is the measured sweet spot for both.
-  model: tiny               # moonshine: tiny | base    whisper: tiny .. large-v3
+  # base, not tiny — see the saga above: moonshine-tiny is deaf to far-field
+  # speech in this room; base hears it and is still fast enough to hide.
+  model: base               # moonshine: tiny | base    whisper: tiny .. large-v3
   device: cpu               # 'cpu' — see README: CTranslate2 has no Jetson CUDA build
   compute_type: int8        # int8 on CPU is ~2x faster than float32, same accuracy here
   language: en

@@ -53,13 +53,21 @@ from loguru import logger
 
 _norm_re = re.compile(r"[^a-z0-9 ]+")
 
-# The NAME, as a shape rather than a spelling. Whisper transcribes the sound of
-# "Roomi" differently on every take — observed on identical audio: 'Roomy',
-# 'brooming', 'Brumi' (the leading b appears when "bye"/"hey" elides into the
-# name). Enumerating spellings lost that race twice in one evening; matching the
-# phonetic shape wins it: an optional b, an r, a rounded vowel run, an m, any tail.
-_NAME_RE = re.compile(r"^b?r[ou]+m[a-z]*$")
-_WAKE_TRIGGERS = {"hey", "hi", "hay", "hey,"} - {"hey,"}
+# The NAME, as a shape rather than a spelling. The ASR transcribes the sound of
+# "Roomi" differently on every take — observed across ~20 real wake attempts on
+# 2026-08-12, BOTH engines: 'Roomy', 'Roomi', 'Rumi', 'Ruby', 'Rooney',
+# 'roommate', 'roomie', 'broom', 'brooming', 'loomy'. Enumerating spellings
+# lost that race twice in one evening; the first shape regex (^b?r[ou]+m...)
+# then lost it again to 'Ruby' (b, not m), 'Rooney' (n) and 'loomy' (l) — the
+# user measured wake at 1-in-5. So: optional b, an r-or-l onset, a rounded
+# vowel run, then any of m/n/b, any tail. Every observed spelling matches;
+# 'bob', 'noon' and 'buddy' still do not.
+_NAME_RE = re.compile(r"^b?[rl][ou]+[mnb][a-z]*$")
+# 'he' and 'a' are what "hey" becomes at distance ('A ruby', 2026-08-12). The
+# bare-vowel trigger is riskier, so it only counts in a two-word utterance —
+# "a robot appeared on screen" from the TV must not chime.
+_WAKE_TRIGGERS = {"hey", "hi", "hay", "he"}
+_WAKE_TRIGGERS_STRICT = {"a", "uh", "oh"}
 _SLEEP_TRIGGERS = {"bye", "by", "buy", "goodbye"}
 
 
@@ -142,11 +150,19 @@ class WakeFilter:
 
         matched = next((p for p in self._phrases if tuple(words[:len(p)]) == p),
                        None)
-        # Shape-based wake: "hey <name-shaped word>" in any spelling whisper
+        # Shape-based wake: "hey <name-shaped word>" in any spelling the ASR
         # invents. The explicit config list still works and can carry longer
         # phrases; this catches the spellings nobody predicted.
         if matched is None and _pair_match(words[:2], _WAKE_TRIGGERS):
             matched = tuple(words[:2])
+        # Degraded triggers ("a ruby") and the bare name ("Roomi?") count only
+        # when the whole utterance is just the call — someone summoning it,
+        # not the TV mentioning a robot.
+        if matched is None and len(words) == 2 and _pair_match(
+                words, _WAKE_TRIGGERS_STRICT):
+            matched = tuple(words)
+        if matched is None and len(words) == 1 and _NAME_RE.match(words[0]):
+            matched = tuple(words)
 
         if matched:
             # Strip the wake phrase by word count from the ORIGINAL text, so the
