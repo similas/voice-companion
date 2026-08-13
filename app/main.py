@@ -14,6 +14,7 @@ import contextlib
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -49,6 +50,7 @@ from app.metrics import MetricsLogger, SpeakingState
 from app.observer import LatencyObserver
 from app.stt import StrictWhisperSTTService
 from app.stt_stream import SpeculativeWhisperSTTService
+from app.tool_repair import ToolCallRepair
 from app.tts_stream import ClauseAggregator
 from app.vad_hook import HookedSileroVAD
 from app.wake import WakeFilter
@@ -194,6 +196,27 @@ def tool_handler(t):
             result = f"{t.name} failed: {e}"
         await params.result_callback(result)
     return handle
+
+
+def pause_music_on_wake():
+    """'Hey Roomi' while music plays means: stop the music and listen.
+
+    Fired by the WakeFilter on explicit wakes only. Runs detached — a slow or
+    dead Spotify API must never delay the chime or the turn. When Spotify has
+    no credentials this is a no-op, so the hook is safe to wire always.
+    """
+    from integrations import spotify
+    if not spotify.enabled():
+        return
+
+    def go():
+        try:
+            asyncio.run(spotify.music.run(action="pause"))
+            logger.info("wake: paused the music to listen")
+        except Exception as e:      # nothing playing / no device — fine
+            logger.debug(f"wake: no music to pause ({e})")
+
+    threading.Thread(target=go, daemon=True).start()
 
 
 def build_system_prompt(cfg, have_tools: bool) -> str:
@@ -785,6 +808,7 @@ async def build_and_run(cfg) -> int:
                 sleep_phrases=cfg.get("wake.sleep_phrases", []),
                 sleep_chime=(cfg.path("wake.sleep_chime")
                              if cfg.get("wake.sleep_chime") else None),
+                on_wake=pause_music_on_wake,
             ),
             # Dump the exact audio whisper sees, so "it misheard me" can be pinned
             # on the microphone or on the model instead of argued about.
@@ -910,6 +934,7 @@ async def build_and_run(cfg) -> int:
         aggregator.user(),      # transcript -> conversation context
         ImageMerger(gate),      # fold any captured frame into that user message
         llm,                    # context -> streamed reply tokens
+        ToolCallRepair(tools),  # execute tool calls that leaked into the text
         tts,                    # tokens -> PCM audio
         transport.output(),     # PCM -> speaker
         aggregator.assistant(), # reply -> conversation context

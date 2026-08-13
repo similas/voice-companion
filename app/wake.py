@@ -85,8 +85,14 @@ class WakeFilter:
 
     def __init__(self, phrases, window_secs: float = 45.0,
                  chime: Optional[str] = None, metrics=None, enabled: bool = True,
-                 sleep_phrases=None, sleep_chime: Optional[str] = None):
+                 sleep_phrases=None, sleep_chime: Optional[str] = None,
+                 on_wake=None):
         self.enabled = enabled
+        # Fired on every EXPLICIT wake ("hey Roomi"), not on window refreshes —
+        # so "hey Roomi" over playing music pauses it to listen, but the
+        # conversation that follows (which refreshes the window) does not
+        # re-pause what the user just asked to resume.
+        self._on_wake = on_wake
         # Each phrase pre-normalised to a word tuple for prefix comparison.
         self._phrases = [tuple(_norm(p)) for p in (phrases or []) if _norm(p)]
         self._sleep_phrases = [tuple(_norm(p)) for p in (sleep_phrases or [])
@@ -170,6 +176,11 @@ class WakeFilter:
             remainder = " ".join(text.split()[len(matched):]).strip()
             self._wake_up()
             self.chime()
+            if self._on_wake:
+                try:
+                    self._on_wake()
+                except Exception as e:      # never break a wake over a hook
+                    logger.debug(f"wake: on_wake hook failed ({e})")
             if remainder:
                 logger.info(f"wake: 'hey Roomi' + command -> {remainder!r}")
                 return remainder

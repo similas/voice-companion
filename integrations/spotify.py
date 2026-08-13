@@ -75,8 +75,8 @@ async def _transport(method: str, path: str, data: dict = None):
           # and "what song is this" did not land without them (measured).
           "action": {"type": "string", "enum": [
               "play", "pause", "resume", "next", "previous", "now_playing"],
-              "description": "next = skip this song; "
-                             "now_playing = what song is this"},
+              "description": "next = skip this song; resume = continue the "
+                             "music; now_playing = what song is this"},
           "query": {"type": "string",
                     "description": "what to play; only with action=play"},
           "kind": {"type": "string",

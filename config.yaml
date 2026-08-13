@@ -281,11 +281,18 @@ llm:
   # Documented here for reference only — num_ctx cannot be set over Ollama's
   # OpenAI-compatible API. It is baked into the derived model above.
   num_ctx: 2048
-  temperature: 0.7
-  # Short replies are not just nicer to listen to, they are FASTER: audio starts
-  # after the first sentence, and a long reply just means the bot talks over your
-  # next question. 60 tokens is roughly 2 spoken sentences.
-  max_tokens: 60
+  # 0.5, not 0.7. With tools in the prompt, higher temperature makes the model
+  # occasionally write the CALL AS TEXT ('whoop_sleep') instead of invoking it
+  # — measured ~1-in-10 tool requests at 0.7, rarer at 0.5, never zero (the
+  # ToolCallRepair processor in app/tool_repair.py nets the remainder). 0.5
+  # keeps jokes and poems lively enough; below 0.4 the roommate gets stiff.
+  temperature: 0.5
+  # 150, raised from 60 (2026-08-12): Roomi is conversational now — poems and
+  # stories are legitimate asks and 60 tokens truncated them mid-line. Short
+  # answers stay short because the prompt says so; this is a ceiling, not a
+  # target, and clause-streaming means long replies still start speaking after
+  # the first clause.
+  max_tokens: 150
   # Conversation turns retained (user+assistant pairs). The system message is
   # always kept. Uncapped history was a real bug: prefill grew every turn and once
   # the total passed num_ctx the model silently lost the start of the conversation.
